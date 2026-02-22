@@ -115,14 +115,9 @@ async function upsertPageMetrics(snapshot_id, page_id, seo) {
   // Adjust these field names to exactly match your scc_page_snapshot_metrics columns.
   // I'll set only safe generic ones. If a column doesn't exist, Supabase will error.
   const payload = {
-    snapshot_id,
-    page_id,
-    // common crawl-derived fields (change names if your schema differs)
-    title: seo.title,
-    meta_description: seo.metaDesc,
-    h1_count: seo.h1Count,
-    word_count: seo.wordCount,
-  };
+  snapshot_id,
+  page_id
+};
 
   const { error } = await supabase
     .from("scc_page_snapshot_metrics")
