@@ -239,24 +239,38 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
 }
 
 async function fetchHtml(url) {
-  const res = await fetch(url, {
-    redirect: "follow",
-    headers: {
-      "user-agent":
-        "Mozilla/5.0 (compatible; MarketersQuestSEO/1.0; +https://marketersquest.com)",
-      accept: "text/html,application/xhtml+xml",
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
-  const contentType = res.headers.get("content-type") || "";
-  const finalUrl = res.url;
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (compatible; MarketersQuestSEO/1.0; +https://marketersquest.com)",
+        accept: "text/html,application/xhtml+xml",
+      },
+    });
 
-  if (!contentType.toLowerCase().includes("text/html")) {
-    return { ok: true, status: res.status, contentType, finalUrl, html: null };
+    const contentType = res.headers.get("content-type") || "";
+    const finalUrl = res.url;
+
+    if (!contentType.toLowerCase().includes("text/html")) {
+      return { ok: true, status: res.status, contentType, finalUrl, html: null };
+    }
+
+    const html = await res.text();
+    return { ok: res.ok, status: res.status, contentType, finalUrl, html };
+  } catch (err) {
+    const msg =
+      err?.name === "AbortError"
+        ? "timeout after 15s"
+        : (err?.message || String(err));
+    return { ok: false, status: null, contentType: null, finalUrl: url, html: null, error: msg };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const html = await res.text();
-  return { ok: res.ok, status: res.status, contentType, finalUrl, html };
 }
 
 async function run() {
@@ -309,6 +323,28 @@ async function run() {
 
       // Fetch
       const fetched = await fetchHtml(q.url);
+        if (!fetched.ok) {
+  console.error("Fetch failed for:", q.url, "reason:", fetched.error);
+
+  await supabase.rpc("scc_mark_url_result", {
+    p_queue_id: q.id,
+    p_success: false,
+    p_http_status: null,
+    p_content_type: null,
+    p_final_url: q.url,
+    p_canonical_url: null,
+    p_error: fetched.error || "fetch failed",
+  });
+
+  // Complete the job as failed (for now, since Stage 1 only crawls 1 url)
+  await supabase.rpc("scc_complete_crawl_job", {
+    p_job_id: job.id,
+    p_success: false,
+    p_error: `Fetch failed: ${fetched.error || "unknown"}`,
+  });
+
+  continue; // go next loop
+}
 
       // Mark queue row done/error (basic)
       await supabase.rpc("scc_mark_url_result", {
