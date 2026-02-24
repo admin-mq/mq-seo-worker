@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import axios from "axios";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -239,39 +240,48 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
 }
 
 async function fetchHtml(url) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
-
   try {
-    const res = await fetch(url, {
-      redirect: "follow",
-      signal: controller.signal,
+    const res = await axios.get(url, {
+      timeout: 15000,
+      maxRedirects: 5,
       headers: {
         "user-agent":
           "Mozilla/5.0 (compatible; MarketersQuestSEO/1.0; +https://marketersquest.com)",
         accept: "text/html,application/xhtml+xml",
       },
+      validateStatus: () => true, // don't throw on 404/500
     });
 
-    const contentType = res.headers.get("content-type") || "";
-    const finalUrl = res.url;
+    const contentType = (res.headers?.["content-type"] || "").toLowerCase();
+    const finalUrl =
+      (res.request?.res && res.request.res.responseUrl) || url;
 
-    if (!contentType.toLowerCase().includes("text/html")) {
-      return { ok: true, status: res.status, contentType, finalUrl, html: null };
+    if (!contentType.includes("text/html")) {
+      return {
+        ok: true,
+        status: res.status,
+        contentType,
+        finalUrl,
+        html: null,
+      };
     }
 
-    const html = await res.text();
-    return { ok: res.ok, status: res.status, contentType, finalUrl, html };
+    return {
+      ok: res.status >= 200 && res.status < 400,
+      status: res.status,
+      contentType,
+      finalUrl,
+      html: typeof res.data === "string" ? res.data : null,
+    };
   } catch (err) {
     const msg =
-      err?.name === "AbortError"
+      err?.code === "ECONNABORTED"
         ? "timeout after 15s"
         : (err?.message || String(err));
     return { ok: false, status: null, contentType: null, finalUrl: url, html: null, error: msg };
-  } finally {
-    clearTimeout(timeout);
   }
 }
+
 
 async function run() {
   console.log("MQ SEO Worker started:", WORKER_ID);
@@ -324,7 +334,7 @@ async function run() {
       // Fetch
       const fetched = await fetchHtml(q.url);
         if (!fetched.ok) {
-  console.error("Fetch failed for:", q.url, "reason:", fetched.error);
+  console.error("Fetch failed for:", q.url, "reason:", fetched.error, "status:", fetched.status);
 
   await supabase.rpc("scc_mark_url_result", {
     p_queue_id: q.id,
