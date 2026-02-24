@@ -123,7 +123,8 @@ function extractSeo(html, finalUrl) {
 }
 
 async function getNextQueuedJob() {
-  const { data, error } = await supabase
+  // Pick queued first
+  let { data, error } = await supabase
     .from("scc_crawl_jobs")
     .select("*")
     .eq("status", "queued")
@@ -132,7 +133,21 @@ async function getNextQueuedJob() {
     .maybeSingle();
 
   if (error) throw error;
-  return data;
+  if (data) return data;
+
+  // If none queued, rescue a stale running job (no heartbeat for 10+ minutes)
+  const { data: stale, error: err2 } = await supabase
+    .from("scc_crawl_jobs")
+    .select("*")
+    .eq("status", "running")
+    .lt("last_heartbeat_at", new Date(Date.now() - 10 * 60 * 1000).toISOString())
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (err2) throw err2;
+
+  return stale || null;
 }
 
 async function setSnapshotStep(snapshot_id, step) {
