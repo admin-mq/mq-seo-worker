@@ -48,31 +48,78 @@ function stripTags(s) {
   return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function extractSeo(html) {
-  const lower = html.toLowerCase();
-
-  // Title
-  let title = extractBetween(lower, "<title>", "</title>");
-  // But title extracted from lower loses case; use a more direct regex on original html:
+function extractSeo(html, finalUrl) {
+  // title
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  title = titleMatch ? stripTags(titleMatch[1]) : null;
+  const titleText = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, " ").trim() : "";
+  const hasTitle = titleText.length > 0;
 
-  // Meta description
+  // meta description
   const metaMatch = html.match(
     /<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']*)["'][^>]*>/i
   );
-  const metaDesc = metaMatch ? metaMatch[1].trim() : null;
+  const hasMeta = !!(metaMatch && metaMatch[1].trim().length > 0);
 
-  // H1 count
+  // h1
   const h1Matches = html.match(/<h1\b[^>]*>/gi);
-  const h1Count = h1Matches ? h1Matches.length : 0;
+  const hasH1 = (h1Matches ? h1Matches.length : 0) > 0;
 
-  // word count (rough, text-only)
-  const text = stripTags(html);
-  const words = text ? text.split(/\s+/).filter(Boolean) : [];
-  const wordCount = words.length;
+  // meta robots noindex check (very basic)
+  const robotsMatch = html.match(
+    /<meta\s+[^>]*name=["']robots["'][^>]*content=["']([^"']*)["'][^>]*>/i
+  );
+  const robotsContent = robotsMatch ? robotsMatch[1].toLowerCase() : "";
+  const indexable = !robotsContent.includes("noindex");
 
-  return { title, metaDesc, h1Count, wordCount };
+  // canonical check (basic)
+  const canonMatch = html.match(/<link\s+[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i);
+  let canonicalOk = true;
+  if (canonMatch && canonMatch[1]) {
+    try {
+      const canon = new URL(canonMatch[1], finalUrl).toString();
+      canonicalOk = canon === finalUrl;
+    } catch {
+      canonicalOk = false;
+    }
+  }
+
+  // schema types (json-ld)
+  const schemaTypes = [];
+  const jsonLdMatches = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const m of jsonLdMatches) {
+    try {
+      const raw = m[1].trim();
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      for (const it of items) {
+        const t = it && it["@type"];
+        if (typeof t === "string") schemaTypes.push(t);
+        else if (Array.isArray(t)) schemaTypes.push(...t.filter(x => typeof x === "string"));
+      }
+    } catch {
+      // ignore invalid JSON-LD blocks
+    }
+  }
+
+  // simple structural score (0–100)
+  let structuralScore = 100;
+  if (!hasTitle) structuralScore -= 25;
+  if (!hasMeta) structuralScore -= 15;
+  if (!hasH1) structuralScore -= 15;
+  if (!indexable) structuralScore -= 30;
+  if (!canonicalOk) structuralScore -= 15;
+  structuralScore = Math.max(0, Math.min(100, structuralScore));
+
+  return {
+    hasTitle,
+    hasMeta,
+    hasH1,
+    indexable,
+    canonicalOk,
+    schemaTypes: Array.from(new Set(schemaTypes)),
+    structuralScore,
+  };
 }
 
 async function getNextQueuedJob() {
@@ -110,14 +157,25 @@ async function upsertPage(site_id, url) {
   return data;
 }
 
-async function upsertPageMetrics(snapshot_id, page_id, seo) {
-  // IMPORTANT:
-  // Adjust these field names to exactly match your scc_page_snapshot_metrics columns.
-  // I'll set only safe generic ones. If a column doesn't exist, Supabase will error.
+async function upsertPageMetrics(snapshot_id, page_id, seo, depth) {
   const payload = {
-  snapshot_id,
-  page_id
-};
+    snapshot_id,
+    page_id,
+
+    indexable: seo.indexable,
+    canonical_ok: seo.canonicalOk,
+    has_title: seo.hasTitle,
+    has_meta: seo.hasMeta,
+    has_h1: seo.hasH1,
+
+    schema_types: seo.schemaTypes,          // jsonb
+    internal_link_depth: depth,             // integer
+
+    structural_score: seo.structuralScore,  // integer
+
+    // leave these as null for now (until you integrate GSC/GA/Ads)
+    // impressions, clicks, avg_position, ctr, etc.
+  };
 
   const { error } = await supabase
     .from("scc_page_snapshot_metrics")
@@ -251,13 +309,13 @@ async function run() {
       });
 
       if (fetched.html) {
-        const seo = extractSeo(fetched.html);
+        const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
 
         // Upsert page entity
         const page = await upsertPage(job.site_id, normalizeUrl(fetched.finalUrl || q.url));
 
         // Upsert metrics (you may need to rename columns)
-        await upsertPageMetrics(job.snapshot_id, page.id, seo);
+        await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth);
 
         // Insert 1-2 actions
         await insertBasicActions(job.snapshot_id, job.site_id, page.id, seo);
