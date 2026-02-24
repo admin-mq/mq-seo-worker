@@ -184,13 +184,12 @@ async function upsertPageMetrics(snapshot_id, page_id, seo, depth) {
   if (error) throw error;
 }
 
-async function insertBasicActions(snapshot_id, site_id, page_id, seo) {
+async function insertBasicActions(snapshot_id, page_id, seo) {
   const actions = [];
 
-  if (!seo.title) {
+  if (!seo.hasTitle) {
     actions.push({
       snapshot_id,
-      site_id,
       page_id,
       action_type: "missing_title",
       title: "Add a unique title tag",
@@ -203,10 +202,9 @@ async function insertBasicActions(snapshot_id, site_id, page_id, seo) {
     });
   }
 
-  if (!seo.metaDesc) {
+  if (!seo.hasMeta) {
     actions.push({
       snapshot_id,
-      site_id,
       page_id,
       action_type: "missing_meta_description",
       title: "Add a meta description",
@@ -318,7 +316,7 @@ async function run() {
         await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth);
 
         // Insert 1-2 actions
-        await insertBasicActions(job.snapshot_id, job.site_id, page.id, seo);
+        await insertBasicActions(job.snapshot_id, page.id, seo);
       }
 
       await setSnapshotStep(job.snapshot_id, "finalizing");
