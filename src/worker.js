@@ -16,33 +16,52 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 const WORKER_ID = `worker-${Math.random().toString(16).slice(2)}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Heartbeat config
+ */
+const HEARTBEAT_EVERY_MS = 15000; // 15s
+let lastHeartbeatAt = 0;
+
+async function heartbeat(jobId) {
+  const now = Date.now();
+  if (now - lastHeartbeatAt < HEARTBEAT_EVERY_MS) return;
+  lastHeartbeatAt = now;
+
+  // If your RPC signature differs, change this call accordingly.
+  const { error } = await supabase.rpc("scc_job_heartbeat", {
+    p_job_id: jobId,
+    p_worker_id: WORKER_ID,
+  });
+
+  if (error) {
+    // heartbeat failures should never crash the worker
+    console.error("Heartbeat error:", error.message || error);
+  }
+}
+
 function normalizeUrl(url) {
   try {
     const u = new URL(url.trim());
     u.hash = "";
+
     // remove common tracking params
     ["gclid", "fbclid"].forEach((p) => u.searchParams.delete(p));
     [...u.searchParams.keys()].forEach((k) => {
       if (k.toLowerCase().startsWith("utm_")) u.searchParams.delete(k);
     });
+
     // normalize host to lowercase
     u.hostname = u.hostname.toLowerCase();
+
     // normalize trailing slash (keep no trailing slash except root)
     if (u.pathname !== "/" && u.pathname.endsWith("/")) {
       u.pathname = u.pathname.slice(0, -1);
     }
+
     return u.toString();
   } catch {
     return url.trim();
   }
-}
-
-function extractBetween(html, start, end) {
-  const i = html.indexOf(start);
-  if (i === -1) return null;
-  const j = html.indexOf(end, i + start.length);
-  if (j === -1) return null;
-  return html.slice(i + start.length, j).trim();
 }
 
 function stripTags(s) {
@@ -52,7 +71,7 @@ function stripTags(s) {
 function extractSeo(html, finalUrl) {
   // title
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const titleText = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, " ").trim() : "";
+  const titleText = titleMatch ? stripTags(titleMatch[1]) : "";
   const hasTitle = titleText.length > 0;
 
   // meta description
@@ -73,7 +92,9 @@ function extractSeo(html, finalUrl) {
   const indexable = !robotsContent.includes("noindex");
 
   // canonical check (basic)
-  const canonMatch = html.match(/<link\s+[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i);
+  const canonMatch = html.match(
+    /<link\s+[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i
+  );
   let canonicalOk = true;
   if (canonMatch && canonMatch[1]) {
     try {
@@ -86,7 +107,11 @@ function extractSeo(html, finalUrl) {
 
   // schema types (json-ld)
   const schemaTypes = [];
-  const jsonLdMatches = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  const jsonLdMatches = [
+    ...html.matchAll(
+      /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+    ),
+  ];
   for (const m of jsonLdMatches) {
     try {
       const raw = m[1].trim();
@@ -96,7 +121,8 @@ function extractSeo(html, finalUrl) {
       for (const it of items) {
         const t = it && it["@type"];
         if (typeof t === "string") schemaTypes.push(t);
-        else if (Array.isArray(t)) schemaTypes.push(...t.filter(x => typeof x === "string"));
+        else if (Array.isArray(t))
+          schemaTypes.push(...t.filter((x) => typeof x === "string"));
       }
     } catch {
       // ignore invalid JSON-LD blocks
@@ -123,49 +149,19 @@ function extractSeo(html, finalUrl) {
   };
 }
 
-async function getNextQueuedJob() {
-  // Pick queued first
-  let { data, error } = await supabase
-    .from("scc_crawl_jobs")
-    .select("*")
-    .eq("status", "queued")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (data) return data;
-
-  // If none queued, rescue a stale running job (no heartbeat for 10+ minutes)
-  const { data: stale, error: err2 } = await supabase
-    .from("scc_crawl_jobs")
-    .select("*")
-    .eq("status", "running")
-    .lt("last_heartbeat_at", new Date(Date.now() - 10 * 60 * 1000).toISOString())
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (err2) throw err2;
-
-  return stale || null;
-}
-
 async function setSnapshotStep(snapshot_id, step) {
-  await supabase
+  const { error } = await supabase
     .from("scc_snapshots")
     .update({ progress_step: step })
     .eq("id", snapshot_id);
+
+  if (error) console.error("setSnapshotStep error:", error.message || error);
 }
 
 async function upsertPage(site_id, url) {
-  // Your table expects unique (site_id, url)
   const { data, error } = await supabase
     .from("scc_pages")
-    .upsert(
-      { site_id, url },
-      { onConflict: "site_id,url" }
-    )
+    .upsert({ site_id, url }, { onConflict: "site_id,url" })
     .select("id, url")
     .maybeSingle();
 
@@ -177,20 +173,14 @@ async function upsertPageMetrics(snapshot_id, page_id, seo, depth) {
   const payload = {
     snapshot_id,
     page_id,
-
     indexable: seo.indexable,
     canonical_ok: seo.canonicalOk,
     has_title: seo.hasTitle,
     has_meta: seo.hasMeta,
     has_h1: seo.hasH1,
-
-    schema_types: seo.schemaTypes,          // jsonb
-    internal_link_depth: depth,             // integer
-
-    structural_score: seo.structuralScore,  // integer
-
-    // leave these as null for now (until you integrate GSC/GA/Ads)
-    // impressions, clicks, avg_position, ctr, etc.
+    schema_types: seo.schemaTypes, // jsonb
+    internal_link_depth: depth,
+    structural_score: seo.structuralScore,
   };
 
   const { error } = await supabase
@@ -208,9 +198,11 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
       snapshot_id,
       page_id,
       action_type: "missing_title",
+      summary: "Missing title tag",
       title: "Add a unique title tag",
       why_it_matters: "Title tags influence rankings and click-through rate.",
       technical_reason: "No <title> tag was found on the page.",
+      expected_impact_range: "Medium",
       severity: "high",
       priority: "high",
       status: "open",
@@ -223,13 +215,32 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
       snapshot_id,
       page_id,
       action_type: "missing_meta_description",
+      summary: "Missing meta description",
       title: "Add a meta description",
-      why_it_matters: "Meta descriptions improve CTR and clarify page relevance.",
+      why_it_matters: "Meta descriptions can improve CTR and clarify relevance.",
       technical_reason: "No meta description tag was found on the page.",
+      expected_impact_range: "Low–Medium",
       severity: "medium",
       priority: "medium",
       status: "open",
-      steps: ["Write a clear description (120–160 chars) with primary intent."],
+      steps: ["Write a clear description (120–160 chars) matching the page intent."],
+    });
+  }
+
+  if (!seo.hasH1) {
+    actions.push({
+      snapshot_id,
+      page_id,
+      action_type: "missing_h1",
+      summary: "Missing H1",
+      title: "Add an H1 heading",
+      why_it_matters: "H1 helps clarify page topic for users and search engines.",
+      technical_reason: "No <h1> tag was found on the page.",
+      expected_impact_range: "Low–Medium",
+      severity: "low",
+      priority: "low",
+      status: "open",
+      steps: ["Add one clear H1 describing the page topic."],
     });
   }
 
@@ -253,17 +264,10 @@ async function fetchHtml(url) {
     });
 
     const contentType = (res.headers?.["content-type"] || "").toLowerCase();
-    const finalUrl =
-      (res.request?.res && res.request.res.responseUrl) || url;
+    const finalUrl = (res.request?.res && res.request.res.responseUrl) || url;
 
     if (!contentType.includes("text/html")) {
-      return {
-        ok: true,
-        status: res.status,
-        contentType,
-        finalUrl,
-        html: null,
-      };
+      return { ok: true, status: res.status, contentType, finalUrl, html: null };
     }
 
     return {
@@ -282,25 +286,76 @@ async function fetchHtml(url) {
   }
 }
 
+/**
+ * B4: Rescue stale jobs + atomically claim next queued job
+ */
+async function rescueStaleJobs() {
+  const { data, error } = await supabase.rpc("scc_rescue_stale_jobs", { p_minutes: 10 });
+  if (error) {
+    console.error("Rescue stale jobs error:", error.message || error);
+    return;
+  }
+  if (data && data > 0) console.log("Rescued stale jobs:", data);
+}
+
+async function claimNextJob() {
+  const { data, error } = await supabase.rpc("scc_claim_next_job", {
+    p_worker_id: WORKER_ID,
+  });
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function failJob(jobId, message) {
+  try {
+    await supabase.rpc("scc_complete_crawl_job", {
+      p_job_id: jobId,
+      p_success: false,
+      p_error: message || "worker error",
+    });
+  } catch (e) {
+    console.error("failJob rpc failed:", e?.message || e);
+  }
+}
 
 async function run() {
   console.log("MQ SEO Worker started:", WORKER_ID);
 
+  let loopCount = 0;
+
   while (true) {
     try {
-      const job = await getNextQueuedJob();
+      loopCount += 1;
+
+      // Rescue every ~30 loops to keep DB clean
+      if (loopCount % 30 === 1) {
+        await rescueStaleJobs();
+      }
+
+      // Atomically claim a queued job
+      const job = await claimNextJob();
 
       if (!job) {
+        // Optional debug line
+        // console.log("No queued jobs. Sleeping...");
         await sleep(2000);
         continue;
       }
 
+      lastHeartbeatAt = 0; // reset heartbeat timer per job
       console.log("Picked job:", job.id, "snapshot:", job.snapshot_id);
 
+      // Heartbeat immediately after picking
+      await heartbeat(job.id);
+
+      // Start job (keeps your existing DB workflow)
       await supabase.rpc("scc_start_crawl_job", { p_job_id: job.id });
+      await heartbeat(job.id);
 
       // Stage steps
       await setSnapshotStep(job.snapshot_id, "discovering");
+      await heartbeat(job.id);
 
       // Enqueue ONLY seed url for Stage-1
       const seed = normalizeUrl(job.seed_url);
@@ -312,51 +367,57 @@ async function run() {
         p_url_normalized: [seed],
         p_depth: 0,
       });
+      await heartbeat(job.id);
 
       await setSnapshotStep(job.snapshot_id, "analyzing");
+      await heartbeat(job.id);
 
       // Claim 1 URL
-      const { data: q, error: claimErr } = await supabase.rpc(
-        "scc_claim_next_url",
-        { p_job_id: job.id, p_worker_id: WORKER_ID, p_lock_minutes: 10 }
-      );
+      const { data: q, error: claimErr } = await supabase.rpc("scc_claim_next_url", {
+        p_job_id: job.id,
+        p_worker_id: WORKER_ID,
+        p_lock_minutes: 10,
+      });
       if (claimErr) throw claimErr;
 
       if (!q) {
-        // Nothing to crawl
-        await supabase.rpc("scc_complete_crawl_job", {
-          p_job_id: job.id,
-          p_success: true,
-        });
+        await supabase.rpc("scc_complete_crawl_job", { p_job_id: job.id, p_success: true });
+        console.log("Completed job (no urls):", job.id);
         continue;
       }
 
+      await heartbeat(job.id);
+
       // Fetch
       const fetched = await fetchHtml(q.url);
-        if (!fetched.ok) {
-  console.error("Fetch failed for:", q.url, "reason:", fetched.error, "status:", fetched.status);
 
-  await supabase.rpc("scc_mark_url_result", {
-    p_queue_id: q.id,
-    p_success: false,
-    p_http_status: null,
-    p_content_type: null,
-    p_final_url: q.url,
-    p_canonical_url: null,
-    p_error: fetched.error || "fetch failed",
-  });
+      if (!fetched.ok) {
+        console.error(
+          "Fetch failed for:",
+          q.url,
+          "reason:",
+          fetched.error,
+          "status:",
+          fetched.status
+        );
 
-  // Complete the job as failed (for now, since Stage 1 only crawls 1 url)
-  await supabase.rpc("scc_complete_crawl_job", {
-    p_job_id: job.id,
-    p_success: false,
-    p_error: `Fetch failed: ${fetched.error || "unknown"}`,
-  });
+        await supabase.rpc("scc_mark_url_result", {
+          p_queue_id: q.id,
+          p_success: false,
+          p_http_status: null,
+          p_content_type: null,
+          p_final_url: q.url,
+          p_canonical_url: null,
+          p_error: fetched.error || "fetch failed",
+        });
 
-  continue; // go next loop
-}
+        await failJob(job.id, `Fetch failed: ${fetched.error || "unknown"}`);
+        continue;
+      }
 
-      // Mark queue row done/error (basic)
+      await heartbeat(job.id);
+
+      // Mark queue row done
       await supabase.rpc("scc_mark_url_result", {
         p_queue_id: q.id,
         p_success: true,
@@ -367,26 +428,31 @@ async function run() {
         p_error: null,
       });
 
+      await heartbeat(job.id);
+
       if (fetched.html) {
         const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
 
-        // Upsert page entity
         const page = await upsertPage(job.site_id, normalizeUrl(fetched.finalUrl || q.url));
+        await heartbeat(job.id);
 
-        // Upsert metrics (you may need to rename columns)
         await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth);
+        await heartbeat(job.id);
 
-        // Insert 1-2 actions
-        await insertBasicActions(job.snapshot_id, page.id, seo);
+        // Actions should never block completion
+        try {
+          await insertBasicActions(job.snapshot_id, page.id, seo);
+        } catch (e) {
+          console.error("Action insert failed (non-fatal):", e?.message || e);
+        }
+
+        await heartbeat(job.id);
       }
 
       await setSnapshotStep(job.snapshot_id, "finalizing");
+      await heartbeat(job.id);
 
-      await supabase.rpc("scc_complete_crawl_job", {
-        p_job_id: job.id,
-        p_success: true,
-      });
-
+      await supabase.rpc("scc_complete_crawl_job", { p_job_id: job.id, p_success: true });
       console.log("Completed job:", job.id);
     } catch (e) {
       console.error("Worker loop error:", e?.message || e);
