@@ -16,10 +16,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 const WORKER_ID = `worker-${Math.random().toString(16).slice(2)}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Heartbeat config
- */
-const HEARTBEAT_EVERY_MS = 15000; // 15s
+const HEARTBEAT_EVERY_MS = 15000;
 let lastHeartbeatAt = 0;
 
 async function heartbeat(jobId) {
@@ -42,23 +39,24 @@ async function heartbeat(jobId) {
 function normalizeUrl(url) {
   if (typeof url !== "string") return null;
 
-  const raw = url.trim();
+  let raw = url.trim();
   if (!raw) return null;
+
+  if (!/^https?:\/\//i.test(raw)) {
+    raw = `https://${raw}`;
+  }
 
   try {
     const u = new URL(raw);
     u.hash = "";
 
-    // remove common tracking params
     ["gclid", "fbclid"].forEach((p) => u.searchParams.delete(p));
     [...u.searchParams.keys()].forEach((k) => {
       if (k.toLowerCase().startsWith("utm_")) u.searchParams.delete(k);
     });
 
-    // normalize host to lowercase
     u.hostname = u.hostname.toLowerCase();
 
-    // normalize trailing slash (keep no trailing slash except root)
     if (u.pathname !== "/" && u.pathname.endsWith("/")) {
       u.pathname = u.pathname.slice(0, -1);
     }
@@ -79,29 +77,24 @@ function stripTags(s) {
 function extractSeo(html, finalUrl) {
   const safeHtml = String(html || "");
 
-  // title
   const titleMatch = safeHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const titleText = titleMatch ? stripTags(titleMatch[1]) : "";
   const hasTitle = titleText.length > 0;
 
-  // meta description
   const metaMatch = safeHtml.match(
     /<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']*)["'][^>]*>/i
   );
   const hasMeta = !!(metaMatch && metaMatch[1].trim().length > 0);
 
-  // h1
   const h1Matches = safeHtml.match(/<h1\b[^>]*>/gi);
   const hasH1 = (h1Matches ? h1Matches.length : 0) > 0;
 
-  // meta robots noindex check (very basic)
   const robotsMatch = safeHtml.match(
     /<meta\s+[^>]*name=["']robots["'][^>]*content=["']([^"']*)["'][^>]*>/i
   );
   const robotsContent = robotsMatch ? robotsMatch[1].toLowerCase() : "";
   const indexable = !robotsContent.includes("noindex");
 
-  // canonical check (basic)
   const canonMatch = safeHtml.match(
     /<link\s+[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i
   );
@@ -115,7 +108,6 @@ function extractSeo(html, finalUrl) {
     }
   }
 
-  // schema types (json-ld)
   const schemaTypes = [];
   const jsonLdMatches = [
     ...safeHtml.matchAll(
@@ -139,11 +131,10 @@ function extractSeo(html, finalUrl) {
         }
       }
     } catch {
-      // ignore invalid JSON-LD blocks
+      // ignore invalid JSON-LD
     }
   }
 
-  // simple structural score (0–100)
   let structuralScore = 100;
   if (!hasTitle) structuralScore -= 25;
   if (!hasMeta) structuralScore -= 15;
@@ -163,9 +154,9 @@ function extractSeo(html, finalUrl) {
   };
 }
 
-async function setSnapshotState(snapshot_id, status, step) {
-  if (!snapshot_id) {
-    console.error("setSnapshotState skipped: missing snapshot_id");
+async function setSnapshotState(snapshotId, status, step) {
+  if (!snapshotId) {
+    console.error("setSnapshotState skipped: missing snapshotId");
     return;
   }
 
@@ -173,38 +164,37 @@ async function setSnapshotState(snapshot_id, status, step) {
   if (status) payload.status = status;
   if (step) payload.progress_step = step;
   if (status === "running") payload.finished_at = null;
-  if (status === "success" || status === "failed") payload.finished_at = new Date().toISOString();
+  if (status === "success" || status === "failed") {
+    payload.finished_at = new Date().toISOString();
+  }
 
-  const { error } = await supabase
-    .from("scc_snapshots")
-    .update(payload)
-    .eq("id", snapshot_id);
+  const { error } = await supabase.from("scc_snapshots").update(payload).eq("id", snapshotId);
 
   if (error) {
     console.error("setSnapshotState error:", error.message || error);
   }
 }
 
-async function setSnapshotStep(snapshot_id, step) {
-  if (!snapshot_id) {
-    console.error("setSnapshotStep skipped: missing snapshot_id");
+async function setSnapshotStep(snapshotId, step) {
+  if (!snapshotId) {
+    console.error("setSnapshotStep skipped: missing snapshotId");
     return;
   }
 
   const { error } = await supabase
     .from("scc_snapshots")
     .update({ progress_step: step })
-    .eq("id", snapshot_id);
+    .eq("id", snapshotId);
 
   if (error) {
     console.error("setSnapshotStep error:", error.message || error);
   }
 }
 
-async function upsertPage(site_id, url) {
+async function upsertPage(siteId, url) {
   const { data, error } = await supabase
     .from("scc_pages")
-    .upsert({ site_id, url }, { onConflict: "site_id,url" })
+    .upsert({ site_id: siteId, url }, { onConflict: "site_id,url" })
     .select("id, url")
     .maybeSingle();
 
@@ -212,10 +202,10 @@ async function upsertPage(site_id, url) {
   return data;
 }
 
-async function upsertPageMetrics(snapshot_id, page_id, seo, depth) {
+async function upsertPageMetrics(snapshotId, pageId, seo, depth) {
   const payload = {
-    snapshot_id,
-    page_id,
+    snapshot_id: snapshotId,
+    page_id: pageId,
     indexable: seo.indexable,
     canonical_ok: seo.canonicalOk,
     has_title: seo.hasTitle,
@@ -233,13 +223,13 @@ async function upsertPageMetrics(snapshot_id, page_id, seo, depth) {
   if (error) throw error;
 }
 
-async function insertBasicActions(snapshot_id, page_id, seo) {
+async function insertBasicActions(snapshotId, pageId, seo) {
   const actions = [];
 
   if (!seo.hasTitle) {
     actions.push({
-      snapshot_id,
-      page_id,
+      snapshot_id: snapshotId,
+      page_id: pageId,
       action_type: "missing_title",
       summary: "Missing title tag",
       title: "Add a unique title tag",
@@ -255,8 +245,8 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
 
   if (!seo.hasMeta) {
     actions.push({
-      snapshot_id,
-      page_id,
+      snapshot_id: snapshotId,
+      page_id: pageId,
       action_type: "missing_meta_description",
       summary: "Missing meta description",
       title: "Add a meta description",
@@ -272,8 +262,8 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
 
   if (!seo.hasH1) {
     actions.push({
-      snapshot_id,
-      page_id,
+      snapshot_id: snapshotId,
+      page_id: pageId,
       action_type: "missing_h1",
       summary: "Missing H1",
       title: "Add an H1 heading",
@@ -306,7 +296,7 @@ async function fetchHtml(url) {
         "accept-language": "en-US,en;q=0.9",
         "cache-control": "no-cache",
         pragma: "no-cache",
-        upgrade-insecure-requests: "1",
+        "upgrade-insecure-requests": "1",
         referer: url,
       },
       validateStatus: () => true,
@@ -401,7 +391,6 @@ async function claimNextJob() {
   if (error) throw error;
   if (!data) return null;
 
-  // Defensive guard against malformed composite/null-shaped payloads
   if (!data.id || !data.snapshot_id || !data.site_id || !data.seed_url) {
     console.error("Malformed claimed job payload:", data);
     return null;
@@ -433,12 +422,10 @@ async function run() {
     try {
       loopCount += 1;
 
-      // rescue stale jobs every ~30 loops
       if (loopCount % 30 === 1) {
         await rescueStaleJobs();
       }
 
-      // atomically claim job
       const job = await claimNextJob();
 
       if (!job) {
@@ -457,7 +444,6 @@ async function run() {
 
       await heartbeat(job.id);
 
-      // claim already set job to running; here we sync snapshot state
       await setSnapshotState(job.snapshot_id, "running", "discovering");
       await heartbeat(job.id);
 
@@ -467,7 +453,6 @@ async function run() {
         continue;
       }
 
-      // Stage-1 only: enqueue seed URL
       const { error: enqueueErr } = await supabase.rpc("scc_enqueue_urls", {
         p_job_id: job.id,
         p_site_id: job.site_id,
@@ -484,7 +469,6 @@ async function run() {
       await setSnapshotStep(job.snapshot_id, "analyzing");
       await heartbeat(job.id);
 
-      // claim 1 URL from queue
       const { data: q, error: claimErr } = await supabase.rpc("scc_claim_next_url", {
         p_job_id: job.id,
         p_worker_id: WORKER_ID,
@@ -505,57 +489,55 @@ async function run() {
 
       await heartbeat(job.id);
 
-      // fetch page
       const fetched = await fetchHtml(q.url);
 
       console.log(
-  "Fetched URL:",
-  q.url,
-  "status:",
-  fetched.status,
-  "contentType:",
-  fetched.contentType,
-  "finalUrl:",
-  fetched.finalUrl,
-  "hasHtml:",
-  !!fetched.html
-);
-      
+        "Fetched URL:",
+        q.url,
+        "status:",
+        fetched.status,
+        "contentType:",
+        fetched.contentType,
+        "finalUrl:",
+        fetched.finalUrl,
+        "hasHtml:",
+        !!fetched.html
+      );
+
       if (!fetched.ok) {
-  console.error(
-    "Fetch failed for:",
-    q.url,
-    "reason:",
-    fetched.error,
-    "status:",
-    fetched.status,
-    "contentType:",
-    fetched.contentType,
-    "blocked:",
-    !!fetched.blocked
-  );
+        console.error(
+          "Fetch failed for:",
+          q.url,
+          "reason:",
+          fetched.error,
+          "status:",
+          fetched.status,
+          "contentType:",
+          fetched.contentType,
+          "blocked:",
+          !!fetched.blocked
+        );
 
-  await supabase.rpc("scc_mark_url_result", {
-    p_queue_id: q.id,
-    p_success: false,
-    p_http_status: fetched.status,
-    p_content_type: fetched.contentType,
-    p_final_url: fetched.finalUrl || q.url,
-    p_canonical_url: null,
-    p_error: fetched.error || "fetch failed",
-  });
+        await supabase.rpc("scc_mark_url_result", {
+          p_queue_id: q.id,
+          p_success: false,
+          p_http_status: fetched.status,
+          p_content_type: fetched.contentType,
+          p_final_url: fetched.finalUrl || q.url,
+          p_canonical_url: null,
+          p_error: fetched.error || "fetch failed",
+        });
 
-  const failMessage = fetched.blocked
-    ? `Site blocked crawler request (${fetched.status})`
-    : `Fetch failed: ${fetched.error || "unknown"}`;
+        const failMessage = fetched.blocked
+          ? `Site blocked crawler request (${fetched.status})`
+          : `Fetch failed: ${fetched.error || "unknown"}`;
 
-  await failJob(job.id, failMessage);
-  continue;
-}
+        await failJob(job.id, failMessage);
+        continue;
+      }
 
       await heartbeat(job.id);
 
-      // mark queue row done
       await supabase.rpc("scc_mark_url_result", {
         p_queue_id: q.id,
         p_success: true,
@@ -569,46 +551,48 @@ async function run() {
       await heartbeat(job.id);
 
       const finalNormalizedUrl = normalizeUrl(fetched.finalUrl || q.url);
-if (!finalNormalizedUrl) {
-  throw new Error("Fetched URL could not be normalized");
-}
+      if (!finalNormalizedUrl) {
+        throw new Error("Fetched URL could not be normalized");
+      }
 
-if (!fetched.html) {
-  console.error(
-    "No HTML body extracted for:",
-    q.url,
-    "status:",
-    fetched.status,
-    "contentType:",
-    fetched.contentType,
-    "finalUrl:",
-    fetched.finalUrl
-  );
+      if (!fetched.html) {
+        console.error(
+          "No HTML body extracted for:",
+          q.url,
+          "status:",
+          fetched.status,
+          "contentType:",
+          fetched.contentType,
+          "finalUrl:",
+          fetched.finalUrl
+        );
 
-  await failJob(
-    job.id,
-    `No crawlable HTML returned (status=${fetched.status || "unknown"}, contentType=${fetched.contentType || "unknown"})`
-  );
-  continue;
-}
+        await failJob(
+          job.id,
+          `No crawlable HTML returned (status=${fetched.status || "unknown"}, contentType=${
+            fetched.contentType || "unknown"
+          })`
+        );
+        continue;
+      }
 
-const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
+      const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
 
-const page = await upsertPage(job.site_id, finalNormalizedUrl);
-await heartbeat(job.id);
+      const page = await upsertPage(job.site_id, finalNormalizedUrl);
+      await heartbeat(job.id);
 
-await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth ?? 0);
+      await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth ?? 0);
       console.log("Inserted page metrics for snapshot:", job.snapshot_id, "page:", page.id);
-await heartbeat(job.id);
+      await heartbeat(job.id);
 
-try {
-  await insertBasicActions(job.snapshot_id, page.id, seo);
-  console.log("Inserted basic actions for snapshot:", job.snapshot_id, "page:", page.id);
-} catch (e) {
-  console.error("Action insert failed (non-fatal):", e?.message || e);
-}
+      try {
+        await insertBasicActions(job.snapshot_id, page.id, seo);
+        console.log("Inserted basic actions for snapshot:", job.snapshot_id, "page:", page.id);
+      } catch (e) {
+        console.error("Action insert failed (non-fatal):", e?.message || e);
+      }
 
-await heartbeat(job.id);
+      await heartbeat(job.id);
 
       await setSnapshotStep(job.snapshot_id, "finalizing");
       await heartbeat(job.id);
