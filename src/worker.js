@@ -296,44 +296,79 @@ async function insertBasicActions(snapshot_id, page_id, seo) {
 async function fetchHtml(url) {
   try {
     const res = await axios.get(url, {
-      timeout: 15000,
+      timeout: 20000,
       maxRedirects: 5,
       headers: {
         "user-agent":
-          "Mozilla/5.0 (compatible; MarketersQuestSEO/1.0; +https://marketersquest.com)",
-        accept: "text/html,application/xhtml+xml",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        pragma: "no-cache",
+        upgrade-insecure-requests: "1",
+        referer: url,
       },
       validateStatus: () => true,
     });
 
     const contentType = (res.headers?.["content-type"] || "").toLowerCase();
     const finalUrl = (res.request?.res && res.request.res.responseUrl) || url;
+    const html = typeof res.data === "string" ? res.data : null;
+
+    if ([401, 403, 429].includes(res.status)) {
+      return {
+        ok: false,
+        blocked: true,
+        status: res.status,
+        contentType,
+        finalUrl,
+        html,
+        error: `blocked with status ${res.status}`,
+      };
+    }
 
     if (!contentType.includes("text/html")) {
       return {
-        ok: true,
+        ok: false,
+        blocked: false,
         status: res.status,
         contentType,
         finalUrl,
         html: null,
+        error: `non-html response (${contentType || "unknown"})`,
+      };
+    }
+
+    if (res.status < 200 || res.status >= 400) {
+      return {
+        ok: false,
+        blocked: false,
+        status: res.status,
+        contentType,
+        finalUrl,
+        html,
+        error: `http status ${res.status}`,
       };
     }
 
     return {
-      ok: res.status >= 200 && res.status < 400,
+      ok: true,
+      blocked: false,
       status: res.status,
       contentType,
       finalUrl,
-      html: typeof res.data === "string" ? res.data : null,
+      html,
     };
   } catch (err) {
     const msg =
       err?.code === "ECONNABORTED"
-        ? "timeout after 15s"
-        : (err?.message || String(err));
+        ? "timeout after 20s"
+        : err?.message || String(err);
 
     return {
       ok: false,
+      blocked: false,
       status: null,
       contentType: null,
       finalUrl: url,
@@ -487,28 +522,36 @@ async function run() {
 );
       
       if (!fetched.ok) {
-        console.error(
-          "Fetch failed for:",
-          q.url,
-          "reason:",
-          fetched.error,
-          "status:",
-          fetched.status
-        );
+  console.error(
+    "Fetch failed for:",
+    q.url,
+    "reason:",
+    fetched.error,
+    "status:",
+    fetched.status,
+    "contentType:",
+    fetched.contentType,
+    "blocked:",
+    !!fetched.blocked
+  );
 
-        await supabase.rpc("scc_mark_url_result", {
-          p_queue_id: q.id,
-          p_success: false,
-          p_http_status: null,
-          p_content_type: null,
-          p_final_url: q.url,
-          p_canonical_url: null,
-          p_error: fetched.error || "fetch failed",
-        });
+  await supabase.rpc("scc_mark_url_result", {
+    p_queue_id: q.id,
+    p_success: false,
+    p_http_status: fetched.status,
+    p_content_type: fetched.contentType,
+    p_final_url: fetched.finalUrl || q.url,
+    p_canonical_url: null,
+    p_error: fetched.error || "fetch failed",
+  });
 
-        await failJob(job.id, `Fetch failed: ${fetched.error || "unknown"}`);
-        continue;
-      }
+  const failMessage = fetched.blocked
+    ? `Site blocked crawler request (${fetched.status})`
+    : `Fetch failed: ${fetched.error || "unknown"}`;
+
+  await failJob(job.id, failMessage);
+  continue;
+}
 
       await heartbeat(job.id);
 
