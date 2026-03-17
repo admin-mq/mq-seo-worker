@@ -23,25 +23,30 @@ const HEARTBEAT_EVERY_MS = 15000; // 15s
 let lastHeartbeatAt = 0;
 
 async function heartbeat(jobId) {
+  if (!jobId) return;
+
   const now = Date.now();
   if (now - lastHeartbeatAt < HEARTBEAT_EVERY_MS) return;
   lastHeartbeatAt = now;
 
-  // If your RPC signature differs, change this call accordingly.
   const { error } = await supabase.rpc("scc_job_heartbeat", {
     p_job_id: jobId,
     p_worker_id: WORKER_ID,
   });
 
   if (error) {
-    // heartbeat failures should never crash the worker
     console.error("Heartbeat error:", error.message || error);
   }
 }
 
 function normalizeUrl(url) {
+  if (typeof url !== "string") return null;
+
+  const raw = url.trim();
+  if (!raw) return null;
+
   try {
-    const u = new URL(url.trim());
+    const u = new URL(raw);
     u.hash = "";
 
     // remove common tracking params
@@ -60,39 +65,44 @@ function normalizeUrl(url) {
 
     return u.toString();
   } catch {
-    return url.trim();
+    return raw;
   }
 }
 
 function stripTags(s) {
-  return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return String(s || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function extractSeo(html, finalUrl) {
+  const safeHtml = String(html || "");
+
   // title
-  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const titleMatch = safeHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const titleText = titleMatch ? stripTags(titleMatch[1]) : "";
   const hasTitle = titleText.length > 0;
 
   // meta description
-  const metaMatch = html.match(
+  const metaMatch = safeHtml.match(
     /<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']*)["'][^>]*>/i
   );
   const hasMeta = !!(metaMatch && metaMatch[1].trim().length > 0);
 
   // h1
-  const h1Matches = html.match(/<h1\b[^>]*>/gi);
+  const h1Matches = safeHtml.match(/<h1\b[^>]*>/gi);
   const hasH1 = (h1Matches ? h1Matches.length : 0) > 0;
 
   // meta robots noindex check (very basic)
-  const robotsMatch = html.match(
+  const robotsMatch = safeHtml.match(
     /<meta\s+[^>]*name=["']robots["'][^>]*content=["']([^"']*)["'][^>]*>/i
   );
   const robotsContent = robotsMatch ? robotsMatch[1].toLowerCase() : "";
   const indexable = !robotsContent.includes("noindex");
 
   // canonical check (basic)
-  const canonMatch = html.match(
+  const canonMatch = safeHtml.match(
     /<link\s+[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["'][^>]*>/i
   );
   let canonicalOk = true;
@@ -108,21 +118,25 @@ function extractSeo(html, finalUrl) {
   // schema types (json-ld)
   const schemaTypes = [];
   const jsonLdMatches = [
-    ...html.matchAll(
+    ...safeHtml.matchAll(
       /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
     ),
   ];
+
   for (const m of jsonLdMatches) {
     try {
       const raw = m[1].trim();
       if (!raw) continue;
+
       const parsed = JSON.parse(raw);
       const items = Array.isArray(parsed) ? parsed : [parsed];
+
       for (const it of items) {
         const t = it && it["@type"];
         if (typeof t === "string") schemaTypes.push(t);
-        else if (Array.isArray(t))
+        else if (Array.isArray(t)) {
           schemaTypes.push(...t.filter((x) => typeof x === "string"));
+        }
       }
     } catch {
       // ignore invalid JSON-LD blocks
@@ -149,13 +163,42 @@ function extractSeo(html, finalUrl) {
   };
 }
 
+async function setSnapshotState(snapshot_id, status, step) {
+  if (!snapshot_id) {
+    console.error("setSnapshotState skipped: missing snapshot_id");
+    return;
+  }
+
+  const payload = {};
+  if (status) payload.status = status;
+  if (step) payload.progress_step = step;
+  if (status === "running") payload.finished_at = null;
+  if (status === "success" || status === "failed") payload.finished_at = new Date().toISOString();
+
+  const { error } = await supabase
+    .from("scc_snapshots")
+    .update(payload)
+    .eq("id", snapshot_id);
+
+  if (error) {
+    console.error("setSnapshotState error:", error.message || error);
+  }
+}
+
 async function setSnapshotStep(snapshot_id, step) {
+  if (!snapshot_id) {
+    console.error("setSnapshotStep skipped: missing snapshot_id");
+    return;
+  }
+
   const { error } = await supabase
     .from("scc_snapshots")
     .update({ progress_step: step })
     .eq("id", snapshot_id);
 
-  if (error) console.error("setSnapshotStep error:", error.message || error);
+  if (error) {
+    console.error("setSnapshotStep error:", error.message || error);
+  }
 }
 
 async function upsertPage(site_id, url) {
@@ -178,7 +221,7 @@ async function upsertPageMetrics(snapshot_id, page_id, seo, depth) {
     has_title: seo.hasTitle,
     has_meta: seo.hasMeta,
     has_h1: seo.hasH1,
-    schema_types: seo.schemaTypes, // jsonb
+    schema_types: seo.schemaTypes,
     internal_link_depth: depth,
     structural_score: seo.structuralScore,
   };
@@ -260,14 +303,20 @@ async function fetchHtml(url) {
           "Mozilla/5.0 (compatible; MarketersQuestSEO/1.0; +https://marketersquest.com)",
         accept: "text/html,application/xhtml+xml",
       },
-      validateStatus: () => true, // don't throw on 404/500
+      validateStatus: () => true,
     });
 
     const contentType = (res.headers?.["content-type"] || "").toLowerCase();
     const finalUrl = (res.request?.res && res.request.res.responseUrl) || url;
 
     if (!contentType.includes("text/html")) {
-      return { ok: true, status: res.status, contentType, finalUrl, html: null };
+      return {
+        ok: true,
+        status: res.status,
+        contentType,
+        finalUrl,
+        html: null,
+      };
     }
 
     return {
@@ -282,20 +331,31 @@ async function fetchHtml(url) {
       err?.code === "ECONNABORTED"
         ? "timeout after 15s"
         : (err?.message || String(err));
-    return { ok: false, status: null, contentType: null, finalUrl: url, html: null, error: msg };
+
+    return {
+      ok: false,
+      status: null,
+      contentType: null,
+      finalUrl: url,
+      html: null,
+      error: msg,
+    };
   }
 }
 
-/**
- * B4: Rescue stale jobs + atomically claim next queued job
- */
 async function rescueStaleJobs() {
-  const { data, error } = await supabase.rpc("scc_rescue_stale_jobs", { p_minutes: 10 });
+  const { data, error } = await supabase.rpc("scc_rescue_stale_jobs", {
+    p_minutes: 10,
+  });
+
   if (error) {
     console.error("Rescue stale jobs error:", error.message || error);
     return;
   }
-  if (data && data > 0) console.log("Rescued stale jobs:", data);
+
+  if (data && data > 0) {
+    console.log("Rescued stale jobs:", data);
+  }
 }
 
 async function claimNextJob() {
@@ -304,10 +364,9 @@ async function claimNextJob() {
   });
 
   if (error) throw error;
-
   if (!data) return null;
 
-  // protect against row-shaped null composites
+  // Defensive guard against malformed composite/null-shaped payloads
   if (!data.id || !data.snapshot_id || !data.site_id || !data.seed_url) {
     console.error("Malformed claimed job payload:", data);
     return null;
@@ -317,6 +376,8 @@ async function claimNextJob() {
 }
 
 async function failJob(jobId, message) {
+  if (!jobId) return;
+
   try {
     await supabase.rpc("scc_complete_crawl_job", {
       p_job_id: jobId,
@@ -337,38 +398,42 @@ async function run() {
     try {
       loopCount += 1;
 
-      // Rescue every ~30 loops to keep DB clean
+      // rescue stale jobs every ~30 loops
       if (loopCount % 30 === 1) {
         await rescueStaleJobs();
       }
 
-      // Atomically claim a queued job
+      // atomically claim job
       const job = await claimNextJob();
 
       if (!job) {
-        // Optional debug line
-        // console.log("No queued jobs. Sleeping...");
         await sleep(2000);
         continue;
       }
 
-      lastHeartbeatAt = 0; // reset heartbeat timer per job
+      if (!job.id || !job.snapshot_id || !job.site_id || !job.seed_url) {
+        console.error("Skipping malformed job:", job);
+        await sleep(2000);
+        continue;
+      }
+
+      lastHeartbeatAt = 0;
       console.log("Picked job:", job.id, "snapshot:", job.snapshot_id);
 
-      // Heartbeat immediately after picking
       await heartbeat(job.id);
 
-      // Start job (keeps your existing DB workflow)
-      await supabase.rpc("scc_start_crawl_job", { p_job_id: job.id });
+      // claim already set job to running; here we sync snapshot state
+      await setSnapshotState(job.snapshot_id, "running", "discovering");
       await heartbeat(job.id);
 
-      // Stage steps
-      await setSnapshotStep(job.snapshot_id, "discovering");
-      await heartbeat(job.id);
-
-      // Enqueue ONLY seed url for Stage-1
       const seed = normalizeUrl(job.seed_url);
-      await supabase.rpc("scc_enqueue_urls", {
+      if (!seed) {
+        await failJob(job.id, "Missing or invalid seed_url");
+        continue;
+      }
+
+      // Stage-1 only: enqueue seed URL
+      const { error: enqueueErr } = await supabase.rpc("scc_enqueue_urls", {
         p_job_id: job.id,
         p_site_id: job.site_id,
         p_snapshot_id: job.snapshot_id,
@@ -376,28 +441,36 @@ async function run() {
         p_url_normalized: [seed],
         p_depth: 0,
       });
+
+      if (enqueueErr) throw enqueueErr;
+
       await heartbeat(job.id);
 
       await setSnapshotStep(job.snapshot_id, "analyzing");
       await heartbeat(job.id);
 
-      // Claim 1 URL
+      // claim 1 URL from queue
       const { data: q, error: claimErr } = await supabase.rpc("scc_claim_next_url", {
         p_job_id: job.id,
         p_worker_id: WORKER_ID,
         p_lock_minutes: 10,
       });
+
       if (claimErr) throw claimErr;
 
-      if (!q) {
-        await supabase.rpc("scc_complete_crawl_job", { p_job_id: job.id, p_success: true });
+      if (!q || !q.id || !q.url) {
+        console.log("No valid queue row claimed for job:", job.id, q);
+        await supabase.rpc("scc_complete_crawl_job", {
+          p_job_id: job.id,
+          p_success: true,
+        });
         console.log("Completed job (no urls):", job.id);
         continue;
       }
 
       await heartbeat(job.id);
 
-      // Fetch
+      // fetch page
       const fetched = await fetchHtml(q.url);
 
       if (!fetched.ok) {
@@ -426,7 +499,7 @@ async function run() {
 
       await heartbeat(job.id);
 
-      // Mark queue row done
+      // mark queue row done
       await supabase.rpc("scc_mark_url_result", {
         p_queue_id: q.id,
         p_success: true,
@@ -440,15 +513,19 @@ async function run() {
       await heartbeat(job.id);
 
       if (fetched.html) {
+        const finalNormalizedUrl = normalizeUrl(fetched.finalUrl || q.url);
+        if (!finalNormalizedUrl) {
+          throw new Error("Fetched URL could not be normalized");
+        }
+
         const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
 
-        const page = await upsertPage(job.site_id, normalizeUrl(fetched.finalUrl || q.url));
+        const page = await upsertPage(job.site_id, finalNormalizedUrl);
         await heartbeat(job.id);
 
-        await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth);
+        await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth ?? 0);
         await heartbeat(job.id);
 
-        // Actions should never block completion
         try {
           await insertBasicActions(job.snapshot_id, page.id, seo);
         } catch (e) {
@@ -461,7 +538,11 @@ async function run() {
       await setSnapshotStep(job.snapshot_id, "finalizing");
       await heartbeat(job.id);
 
-      await supabase.rpc("scc_complete_crawl_job", { p_job_id: job.id, p_success: true });
+      await supabase.rpc("scc_complete_crawl_job", {
+        p_job_id: job.id,
+        p_success: true,
+      });
+
       console.log("Completed job:", job.id);
     } catch (e) {
       console.error("Worker loop error:", e?.message || e);
