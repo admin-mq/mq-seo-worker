@@ -473,6 +473,19 @@ async function run() {
       // fetch page
       const fetched = await fetchHtml(q.url);
 
+      console.log(
+  "Fetched URL:",
+  q.url,
+  "status:",
+  fetched.status,
+  "contentType:",
+  fetched.contentType,
+  "finalUrl:",
+  fetched.finalUrl,
+  "hasHtml:",
+  !!fetched.html
+);
+      
       if (!fetched.ok) {
         console.error(
           "Fetch failed for:",
@@ -512,28 +525,47 @@ async function run() {
 
       await heartbeat(job.id);
 
-      if (fetched.html) {
-        const finalNormalizedUrl = normalizeUrl(fetched.finalUrl || q.url);
-        if (!finalNormalizedUrl) {
-          throw new Error("Fetched URL could not be normalized");
-        }
+      const finalNormalizedUrl = normalizeUrl(fetched.finalUrl || q.url);
+if (!finalNormalizedUrl) {
+  throw new Error("Fetched URL could not be normalized");
+}
 
-        const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
+if (!fetched.html) {
+  console.error(
+    "No HTML body extracted for:",
+    q.url,
+    "status:",
+    fetched.status,
+    "contentType:",
+    fetched.contentType,
+    "finalUrl:",
+    fetched.finalUrl
+  );
 
-        const page = await upsertPage(job.site_id, finalNormalizedUrl);
-        await heartbeat(job.id);
+  await failJob(
+    job.id,
+    `No crawlable HTML returned (status=${fetched.status || "unknown"}, contentType=${fetched.contentType || "unknown"})`
+  );
+  continue;
+}
 
-        await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth ?? 0);
-        await heartbeat(job.id);
+const seo = extractSeo(fetched.html, fetched.finalUrl || q.url);
 
-        try {
-          await insertBasicActions(job.snapshot_id, page.id, seo);
-        } catch (e) {
-          console.error("Action insert failed (non-fatal):", e?.message || e);
-        }
+const page = await upsertPage(job.site_id, finalNormalizedUrl);
+await heartbeat(job.id);
 
-        await heartbeat(job.id);
-      }
+await upsertPageMetrics(job.snapshot_id, page.id, seo, q.depth ?? 0);
+      console.log("Inserted page metrics for snapshot:", job.snapshot_id, "page:", page.id);
+await heartbeat(job.id);
+
+try {
+  await insertBasicActions(job.snapshot_id, page.id, seo);
+  console.log("Inserted basic actions for snapshot:", job.snapshot_id, "page:", page.id);
+} catch (e) {
+  console.error("Action insert failed (non-fatal):", e?.message || e);
+}
+
+await heartbeat(job.id);
 
       await setSnapshotStep(job.snapshot_id, "finalizing");
       await heartbeat(job.id);
