@@ -154,6 +154,63 @@ function extractSeo(html, finalUrl) {
   };
 }
 
+function clamp(num, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, num));
+}
+
+function deriveScores(seo, depth = 0) {
+  let visibilityScore = 0;
+
+  if (seo.indexable) visibilityScore += 30;
+  if (seo.hasTitle) visibilityScore += 20;
+  if (seo.hasMeta) visibilityScore += 15;
+  if (seo.hasH1) visibilityScore += 10;
+  if (seo.canonicalOk) visibilityScore += 10;
+  if ((seo.schemaTypes || []).length > 0) visibilityScore += 5;
+
+  const normalizedDepth = typeof depth === "number" ? depth : 0;
+  visibilityScore += Math.max(0, 10 - normalizedDepth * 2);
+  visibilityScore = clamp(visibilityScore);
+
+  let revenueScore = 40;
+  if (seo.hasTitle) revenueScore += 10;
+  if (seo.hasMeta) revenueScore += 10;
+  if (seo.hasH1) revenueScore += 5;
+  if (seo.indexable) revenueScore += 10;
+  if ((seo.schemaTypes || []).length > 0) revenueScore += 10;
+  revenueScore -= Math.min(15, normalizedDepth * 3);
+  revenueScore = clamp(revenueScore);
+
+  let paidRiskScore = 0;
+  if (!seo.hasTitle) paidRiskScore += 25;
+  if (!seo.hasMeta) paidRiskScore += 20;
+  if (!seo.hasH1) paidRiskScore += 10;
+  if (!seo.indexable) paidRiskScore += 30;
+  if (!seo.canonicalOk) paidRiskScore += 15;
+  paidRiskScore = clamp(paidRiskScore);
+
+  let pageOpportunityScore = Math.round(
+    (100 - seo.structuralScore) * 0.45 +
+      (100 - visibilityScore) * 0.35 +
+      paidRiskScore * 0.2
+  );
+
+  if (normalizedDepth >= 3) pageOpportunityScore += 5;
+  pageOpportunityScore = clamp(pageOpportunityScore);
+
+  let priorityBucket = "low";
+  if (pageOpportunityScore >= 70) priorityBucket = "high";
+  else if (pageOpportunityScore >= 40) priorityBucket = "medium";
+
+  return {
+    visibilityScore,
+    revenueScore,
+    paidRiskScore,
+    pageOpportunityScore,
+    priorityBucket,
+  };
+}
+
 async function setSnapshotState(snapshotId, status, step) {
   if (!snapshotId) {
     console.error("setSnapshotState skipped: missing snapshotId");
@@ -203,6 +260,8 @@ async function upsertPage(siteId, url) {
 }
 
 async function upsertPageMetrics(snapshotId, pageId, seo, depth) {
+  const derived = deriveScores(seo, depth);
+
   const payload = {
     snapshot_id: snapshotId,
     page_id: pageId,
@@ -214,6 +273,17 @@ async function upsertPageMetrics(snapshotId, pageId, seo, depth) {
     schema_types: seo.schemaTypes,
     internal_link_depth: depth,
     structural_score: seo.structuralScore,
+
+    visibility_score: derived.visibilityScore,
+    revenue_score: derived.revenueScore,
+    paid_risk_score: derived.paidRiskScore,
+    page_opportunity_score: derived.pageOpportunityScore,
+    priority_bucket: derived.priorityBucket,
+
+    impressions: 0,
+    clicks: 0,
+    avg_position: 0,
+    ctr: 0,
   };
 
   const { error } = await supabase
