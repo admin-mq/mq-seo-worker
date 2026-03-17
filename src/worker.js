@@ -304,7 +304,16 @@ async function claimNextJob() {
   });
 
   if (error) throw error;
-  return data || null;
+
+  if (!data) return null;
+
+  // protect against row-shaped null composites
+  if (!data.id || !data.snapshot_id || !data.site_id || !data.seed_url) {
+    console.error("Malformed claimed job payload:", data);
+    return null;
+  }
+
+  return data;
 }
 
 async function failJob(jobId, message) {
