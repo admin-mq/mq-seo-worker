@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 const RESCUE_STALE_AFTER_MIN = Number(process.env.RESCUE_STALE_AFTER_MIN || 10);
 const USER_AGENT =
   process.env.USER_AGENT ||
-  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.5; +https://marketersquest.com)";
+  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.6; +https://marketersquest.com)";
 const MAX_REDIRECTS = Number(process.env.MAX_REDIRECTS || 5);
 
 const NON_HTML_EXTENSIONS = [
@@ -118,6 +118,11 @@ function countWords(text = "") {
 
 function clamp(num, min, max) {
   return Math.max(min, Math.min(max, num));
+}
+
+function avg(nums = []) {
+  if (!nums.length) return 0;
+  return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
 }
 
 function getPathSegments(urlString) {
@@ -273,9 +278,7 @@ function classifyPageTypeFromSignals({
   const body = cleanText(bodyText).toLowerCase();
   const schema = (schemaTypes || []).map((s) => String(s).toLowerCase());
 
-  if (path === "/" || path === "") {
-    return "homepage";
-  }
+  if (path === "/" || path === "") return "homepage";
 
   const scores = {
     homepage: 0,
@@ -301,48 +304,22 @@ function classifyPageTypeFromSignals({
   if (/privacy|cookie|terms|policy|legal|refund|return-policy|shipping-policy|disclaimer/.test(path)) {
     addScore(scores, "policy", 120);
   }
-  if (/contact|support|help|customer-service/.test(path)) {
-    addScore(scores, "contact", 90);
-  }
-  if (/about|company|our-story|who-we-are|team|leadership/.test(path)) {
-    addScore(scores, "about", 80);
-  }
-  if (/pricing|plans/.test(path)) {
-    addScore(scores, "pricing", 95);
-  }
+  if (/contact|support|help|customer-service/.test(path)) addScore(scores, "contact", 90);
+  if (/about|company|our-story|who-we-are|team|leadership/.test(path)) addScore(scores, "about", 80);
+  if (/pricing|plans/.test(path)) addScore(scores, "pricing", 95);
   if (/demo|book-demo|get-started|start-now|free-trial|trial|contact-sales/.test(path)) {
     addScore(scores, "conversion", 95);
   }
-  if (/location|locations|city|area|near-me/.test(path)) {
-    addScore(scores, "location", 75);
-  }
-  if (/case-study|case-studies|success-story|success-stories/.test(path)) {
-    addScore(scores, "case_study", 90);
-  }
-  if (/testimonial|testimonials|review|reviews/.test(path)) {
-    addScore(scores, "proof", 80);
-  }
-  if (/feature|features|capabilities|platform|technology/.test(path)) {
-    addScore(scores, "feature", 70);
-  }
-  if (/service|services|solution|solutions/.test(path)) {
-    addScore(scores, "service", 72);
-  }
-  if (/product|products|sku|item|\/p\/|\/pdp\/|\/product\//.test(path)) {
-    addScore(scores, "product", 85);
-  }
-  if (/category|categories/.test(path)) {
-    addScore(scores, "category", 90);
-  }
-  if (/collection|collections|shop|store|catalog|browse/.test(path)) {
-    addScore(scores, "category", 68);
-  }
-  if (isArchiveLikeUrl(normalizedUrl)) {
-    addScore(scores, "archive", 100);
-  }
-  if (isArticleLikeUrl(normalizedUrl)) {
-    addScore(scores, "article", 88);
-  }
+  if (/location|locations|city|area|near-me/.test(path)) addScore(scores, "location", 75);
+  if (/case-study|case-studies|success-story|success-stories/.test(path)) addScore(scores, "case_study", 90);
+  if (/testimonial|testimonials|review|reviews/.test(path)) addScore(scores, "proof", 80);
+  if (/feature|features|capabilities|platform|technology/.test(path)) addScore(scores, "feature", 70);
+  if (/service|services|solution|solutions/.test(path)) addScore(scores, "service", 72);
+  if (/product|products|sku|item|\/p\/|\/pdp\/|\/product\//.test(path)) addScore(scores, "product", 85);
+  if (/category|categories/.test(path)) addScore(scores, "category", 90);
+  if (/collection|collections|shop|store|catalog|browse/.test(path)) addScore(scores, "category", 68);
+  if (isArchiveLikeUrl(normalizedUrl)) addScore(scores, "archive", 100);
+  if (isArticleLikeUrl(normalizedUrl)) addScore(scores, "article", 88);
 
   if (segs.length >= 2 && segs.some(isLikelyDateSegment)) {
     addScore(scores, "article", 25);
@@ -352,9 +329,7 @@ function classifyPageTypeFromSignals({
   if (schema.some((s) => ["article", "blogposting", "newsarticle", "medicalwebpage", "howto"].includes(s))) {
     addScore(scores, "article", 30);
   }
-  if (schema.some((s) => ["product"].includes(s))) {
-    addScore(scores, "product", 30);
-  }
+  if (schema.some((s) => ["product"].includes(s))) addScore(scores, "product", 30);
   if (schema.some((s) => ["faqpage", "softwareapplication", "service"].includes(s))) {
     addScore(scores, "service", 14);
     addScore(scores, "feature", 10);
@@ -381,13 +356,9 @@ function classifyPageTypeFromSignals({
   if (/posted on|published on|written by|author|leave a comment|read more/.test(body)) {
     addScore(scores, "article", 18);
   }
-  if (/category archives|tag archives|author archives/.test(body)) {
-    addScore(scores, "archive", 25);
-  }
+  if (/category archives|tag archives|author archives/.test(body)) addScore(scores, "archive", 25);
 
-  if (pathDepth(normalizedUrl) >= 2 && slug.split("-").length >= 3) {
-    addScore(scores, "article", 10);
-  }
+  if (pathDepth(normalizedUrl) >= 2 && slug.split("-").length >= 3) addScore(scores, "article", 10);
   if (pathDepth(normalizedUrl) === 1 && slug.split("-").length <= 2) {
     addScore(scores, "service", 4);
     addScore(scores, "pricing", 4);
@@ -579,6 +550,34 @@ function createQueueState() {
   };
 }
 
+function createSnapshotSummaryState(seedUrl) {
+  return {
+    seed_url: seedUrl,
+    site_type: "mixed",
+    pages_crawled: 0,
+    errors_count: 0,
+    page_type_counts: {},
+    score_lists: {
+      structural: [],
+      visibility: [],
+      revenue: [],
+      paid_risk: [],
+      opportunity: [],
+    },
+    issues: {
+      non_indexable_pages: 0,
+      canonical_issues: 0,
+      missing_titles: 0,
+      missing_meta_descriptions: 0,
+      missing_h1s: 0,
+      thin_content_pages: 0,
+      slow_pages: 0,
+      deep_pages: 0,
+    },
+    top_opportunity_pages: [],
+  };
+}
+
 function incrementCount(map, key) {
   map[key] = (map[key] || 0) + 1;
 }
@@ -595,6 +594,41 @@ function registerEnqueuedCandidate(queueState, pageType, familyKey) {
 function registerSelectedPage(queueState, pageType, familyKey) {
   incrementCount(queueState.selectedTypeCounts, pageType);
   incrementCount(queueState.selectedFamilyCounts, familyKey);
+}
+
+function registerSummaryPage(summaryState, pageSummary) {
+  summaryState.pages_crawled += 1;
+  incrementCount(summaryState.page_type_counts, pageSummary.pageType);
+
+  summaryState.score_lists.structural.push(pageSummary.structuralScore);
+  summaryState.score_lists.visibility.push(pageSummary.visibilityScore);
+  summaryState.score_lists.revenue.push(pageSummary.revenueScore);
+  summaryState.score_lists.paid_risk.push(pageSummary.paidRiskScore);
+  summaryState.score_lists.opportunity.push(pageSummary.pageOpportunityScore);
+
+  if (!pageSummary.indexable) summaryState.issues.non_indexable_pages += 1;
+  if (!pageSummary.canonicalOk) summaryState.issues.canonical_issues += 1;
+  if (!pageSummary.hasTitle) summaryState.issues.missing_titles += 1;
+  if (!pageSummary.hasMeta) summaryState.issues.missing_meta_descriptions += 1;
+  if (!pageSummary.hasH1) summaryState.issues.missing_h1s += 1;
+  if (pageSummary.wordCount < getThinContentThreshold(pageSummary.pageType)) {
+    summaryState.issues.thin_content_pages += 1;
+  }
+  if (pageSummary.loadMs && pageSummary.loadMs > 5000) summaryState.issues.slow_pages += 1;
+  if (pageSummary.internalLinkDepth >= 2) summaryState.issues.deep_pages += 1;
+
+  summaryState.top_opportunity_pages.push({
+    url: pageSummary.url,
+    page_type: pageSummary.pageType,
+    opportunity: pageSummary.pageOpportunityScore,
+    structural: pageSummary.structuralScore,
+    visibility: pageSummary.visibilityScore,
+    revenue: pageSummary.revenueScore,
+    priority_bucket: pageSummary.priorityBucket,
+  });
+
+  summaryState.top_opportunity_pages.sort((a, b) => b.opportunity - a.opportunity);
+  summaryState.top_opportunity_pages = summaryState.top_opportunity_pages.slice(0, 5);
 }
 
 function getContentMixTargets(maxPages) {
@@ -772,103 +806,6 @@ function buildPriorityScore({
   if (pageType === "contact") score = Math.min(score, 38);
 
   return { score, pageType, familyKey };
-}
-
-async function fetchHtml(url) {
-  const started = Date.now();
-
-  const response = await axios.get(url, {
-    timeout: REQUEST_TIMEOUT_MS,
-    maxRedirects: MAX_REDIRECTS,
-    validateStatus: () => true,
-    headers: {
-      "User-Agent": USER_AGENT,
-      Accept: "text/html,application/xhtml+xml",
-    },
-  });
-
-  const loadMs = Date.now() - started;
-  const contentType = (response.headers["content-type"] || "").toLowerCase();
-
-  return {
-    status: response.status,
-    html: typeof response.data === "string" ? response.data : "",
-    contentType,
-    finalUrl: normalizeUrl(response.request?.res?.responseUrl || url) || normalizeUrl(url),
-    loadMs,
-  };
-}
-
-function extractSeoData(html, url, status, contentType, loadMs, depth, seedUrl) {
-  const $ = cheerio.load(html || "");
-
-  const title = cleanText($("title").first().text() || "");
-  const metaDescription = cleanText($('meta[name="description"]').attr("content") || "");
-  const canonicalHref = $('link[rel="canonical"]').attr("href");
-  const canonicalUrl = canonicalHref
-    ? normalizeUrl(safeUrl(canonicalHref, url)?.toString())
-    : null;
-
-  const h1Count = $("h1").length;
-  const h1Text = cleanText($("h1").first().text() || "");
-  const bodyText = cleanText($("body").text() || "");
-  const wordCount = countWords(bodyText);
-
-  const robotsMeta = (
-    $('meta[name="robots"]').attr("content") ||
-    $('meta[name="googlebot"]').attr("content") ||
-    ""
-  ).toLowerCase();
-
-  const noindex = robotsMeta.includes("noindex");
-  const indexable =
-    status >= 200 &&
-    status < 300 &&
-    contentType.includes("text/html") &&
-    !noindex;
-
-  const schemaTypes = detectSchemaTypes($);
-
-  const pageType = classifyPageTypeFromSignals({
-    url,
-    title,
-    h1Text,
-    bodyText,
-    schemaTypes,
-  });
-
-  const internalLinks = extractInternalLinks($, url, seedUrl);
-
-  return {
-    $,
-    title,
-    metaDescription,
-    canonicalUrl,
-    h1Count,
-    h1Text: h1Text || null,
-    bodyText,
-    wordCount,
-    robotsMeta: robotsMeta || null,
-    noindex,
-    indexable,
-    schemaTypes,
-    pageType,
-    statusCode: status,
-    contentType,
-    loadMs,
-    internalLinks,
-    internalLinksCount: internalLinks.length,
-    internalLinkDepth: depth,
-  };
-}
-
-function evaluateCanonicalOk(finalUrl, canonicalUrl) {
-  if (!canonicalUrl) return false;
-  const normalizedFinal = normalizeUrl(finalUrl);
-  const normalizedCanonical = normalizeUrl(canonicalUrl);
-  return normalizedFinal && normalizedCanonical
-    ? normalizedFinal === normalizedCanonical
-    : false;
 }
 
 function getPageIntentWeight(pageType) {
@@ -1099,15 +1036,9 @@ function getActionCap(pageType, pageOpportunityScore) {
   if (["homepage", "pricing", "conversion", "service", "product"].includes(pageType)) {
     return pageOpportunityScore >= 70 ? 5 : 4;
   }
-  if (["article", "category", "feature", "case_study"].includes(pageType)) {
-    return 4;
-  }
-  if (["archive", "about", "location"].includes(pageType)) {
-    return 3;
-  }
-  if (["contact", "policy"].includes(pageType)) {
-    return 2;
-  }
+  if (["article", "category", "feature", "case_study"].includes(pageType)) return 4;
+  if (["archive", "about", "location"].includes(pageType)) return 3;
+  if (["contact", "policy"].includes(pageType)) return 2;
   return 3;
 }
 
@@ -1161,7 +1092,6 @@ function buildActions({
   const actions = [];
   const thinThreshold = getThinContentThreshold(pageType);
   const isCommercial = ["homepage", "pricing", "conversion", "service", "product"].includes(pageType);
-  const isContent = ["article", "archive", "category", "case_study", "feature"].includes(pageType);
 
   const pushAction = ({
     actionType,
@@ -1331,9 +1261,9 @@ function buildActions({
       technicalReason: "The page has strategic importance but still shows notable structural or visibility gaps.",
       expectedImpactRange: "High",
       steps: [
-        "Clarify the primary positioning of the business in the headline and title.",
+        "Clarify the core positioning of the business in the title and headline.",
         "Improve links from the homepage to key revenue or strategic pages.",
-        "Strengthen the homepage copy so it communicates intent more clearly."
+        "Strengthen homepage copy so it communicates intent more clearly."
       ],
       score: 80,
     });
@@ -1349,8 +1279,8 @@ function buildActions({
       expectedImpactRange: "High",
       steps: [
         "Prioritize technical and on-page improvements here first.",
-        "Improve internal linking into this page from stronger parts of the site.",
-        "Make the offer, differentiation, and intent clearer."
+        "Improve internal linking into this page from stronger site sections.",
+        "Make the offer and differentiation clearer."
       ],
       score: pageOpportunityScore >= 80 ? 94 : 82,
     });
@@ -1362,12 +1292,12 @@ function buildActions({
       titleText: "Improve article depth and completeness",
       summary: "This article likely needs more depth to compete for informational queries.",
       whyItMatters: "Informational pages often need stronger coverage to rank for broader and more competitive topics.",
-      technicalReason: `The article appears thin relative to the expected threshold for informational content.`,
+      technicalReason: "The article appears thin relative to the expected threshold for informational content.",
       expectedImpactRange: "Medium",
       steps: [
         "Expand the article to cover subtopics, definitions, FAQs, or examples.",
         "Add stronger section structure and semantic breadth.",
-        "Make sure the article fully satisfies the likely search intent."
+        "Make sure the article fully satisfies search intent."
       ],
       score: 72,
     });
@@ -1382,8 +1312,8 @@ function buildActions({
       technicalReason: `The page was discovered at internal depth ${internalLinkDepth}.`,
       expectedImpactRange: "Low-Medium",
       steps: [
-        "Link to this article from relevant archive, category, or hub pages.",
-        "Add contextual internal links from related articles.",
+        "Link to this article from relevant archive or category pages.",
+        "Add contextual links from related articles.",
         "Promote important evergreen content from stronger site sections."
       ],
       score: 58,
@@ -1395,8 +1325,8 @@ function buildActions({
       actionType: "strengthen_archive_hub_role",
       titleText: "Strengthen archive page as a content hub",
       summary: "This archive page should better distribute authority to high-value detail pages.",
-      whyItMatters: "Archive pages are more useful when they help users and search engines reach the strongest articles efficiently.",
-      technicalReason: "The page type is archive-like, which usually performs best as a structured hub rather than a weak listing.",
+      whyItMatters: "Archive pages work best when they help users and search engines reach the strongest articles efficiently.",
+      technicalReason: "The page type is archive-like, which usually performs best as a structured hub rather than a weak list.",
       expectedImpactRange: "Low-Medium",
       steps: [
         "Improve descriptive intro copy on the archive page.",
@@ -1413,7 +1343,7 @@ function buildActions({
       titleText: "Clarify category page intent",
       summary: "This category page should better explain what users can find here.",
       whyItMatters: "Category pages often perform better when they combine clear topic framing with strong onward links.",
-      technicalReason: "The page type suggests a category or browse page, which may need stronger explanatory copy.",
+      technicalReason: "The page type suggests a category page, which may need stronger explanatory copy.",
       expectedImpactRange: "Low-Medium",
       steps: [
         "Add a short descriptive intro that explains the category.",
@@ -1430,7 +1360,7 @@ function buildActions({
       titleText: "Improve internal prominence",
       summary: "This page looks reasonably well built, but may be too weakly connected internally.",
       whyItMatters: "Pages can remain underexposed when they are structurally decent but buried in the site.",
-      technicalReason: "Structural quality is acceptable, but visibility readiness is still held back and the page sits relatively deep.",
+      technicalReason: "Structural quality is acceptable, but visibility readiness is still being held back and the page sits relatively deep.",
       expectedImpactRange: "Medium",
       steps: [
         "Increase internal links from stronger site sections.",
@@ -1478,156 +1408,67 @@ function buildActions({
   return dedupeAndLimitActions(actions, pageType, pageOpportunityScore);
 }
 
-async function rescueStaleJobs() {
-  try {
-    await supabase.rpc("scc_rescue_stale_jobs", { p_minutes: RESCUE_STALE_AFTER_MIN });
-  } catch (err) {
-    console.error("[rescue stale jobs]", err.message);
-  }
+function buildSnapshotSummary(summaryState) {
+  const pagesCrawled = summaryState.pages_crawled || 0;
+  const pageTypeCounts = summaryState.page_type_counts || {};
+  const issues = summaryState.issues || {};
+
+  const avgStructural = avg(summaryState.score_lists.structural);
+  const avgVisibility = avg(summaryState.score_lists.visibility);
+  const avgRevenue = avg(summaryState.score_lists.revenue);
+  const avgPaidRisk = avg(summaryState.score_lists.paid_risk);
+  const avgOpportunity = avg(summaryState.score_lists.opportunity);
+
+  const topIssues = [
+    { key: "missing_meta_descriptions", label: "Missing meta descriptions", count: issues.missing_meta_descriptions || 0 },
+    { key: "thin_content_pages", label: "Thin content pages", count: issues.thin_content_pages || 0 },
+    { key: "missing_h1s", label: "Missing H1s", count: issues.missing_h1s || 0 },
+    { key: "canonical_issues", label: "Canonical issues", count: issues.canonical_issues || 0 },
+    { key: "non_indexable_pages", label: "Non-indexable pages", count: issues.non_indexable_pages || 0 },
+    { key: "slow_pages", label: "Slow pages", count: issues.slow_pages || 0 },
+    { key: "deep_pages", label: "Deep pages", count: issues.deep_pages || 0 },
+  ]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4);
+
+  const focusAreas = [];
+  if (avgOpportunity >= 60) focusAreas.push("High overall SEO opportunity across crawled pages");
+  if ((issues.thin_content_pages || 0) >= 2) focusAreas.push("Content depth is a recurring issue");
+  if ((issues.missing_meta_descriptions || 0) >= 2) focusAreas.push("Snippet optimization needs attention");
+  if ((issues.non_indexable_pages || 0) >= 1) focusAreas.push("Indexability should be reviewed");
+  if ((issues.deep_pages || 0) >= 2) focusAreas.push("Important pages may be too deep in the site structure");
+
+  return {
+    version: 1,
+    generated_at: nowIso(),
+    site_type: summaryState.site_type || "mixed",
+    pages_crawled: pagesCrawled,
+    page_type_counts: pageTypeCounts,
+    average_scores: {
+      structural: avgStructural,
+      visibility: avgVisibility,
+      revenue: avgRevenue,
+      paid_risk: avgPaidRisk,
+      opportunity: avgOpportunity,
+    },
+    issues,
+    top_issues: topIssues,
+    top_opportunity_pages: (summaryState.top_opportunity_pages || []).slice(0, 5),
+    focus_areas: focusAreas.slice(0, 4),
+  };
 }
 
-async function claimNextJob() {
-  const { data, error } = await supabase.rpc("scc_claim_next_job", { p_worker_id: WORKER_ID });
-  if (error) throw error;
-  if (!data) return null;
-  if (Array.isArray(data)) return data[0] || null;
-  if (typeof data === "object" && data.job) return data.job;
-  return data;
-}
-
-async function heartbeat(jobId) {
-  try {
-    await supabase.rpc("scc_job_heartbeat", {
-      p_job_id: jobId,
-      p_worker_id: WORKER_ID,
-    });
-  } catch (err) {
-    console.error(`[heartbeat] job=${jobId}`, err.message);
-  }
-}
-
-async function completeJob(jobId, success, errorText = null) {
-  const { error } = await supabase.rpc("scc_complete_crawl_job", {
-    p_job_id: jobId,
-    p_success: success,
-    p_error: errorText,
-  });
-
-  if (error) throw error;
-}
-
-async function updateJobProgress(jobId, pagesDone, errorsCount) {
+async function updateSnapshotSummary(snapshotId, summaryJson) {
   const { error } = await supabase
-    .from("scc_crawl_jobs")
+    .from("scc_snapshots")
     .update({
-      pages_done: pagesDone,
-      errors_count: errorsCount,
-      last_heartbeat_at: nowIso(),
+      notes: JSON.stringify(summaryJson, null, 2),
     })
-    .eq("id", jobId);
+    .eq("id", snapshotId);
 
-  if (error) console.error(`[progress update] job=${jobId}`, error.message);
-}
-
-async function getOrCreatePage({ siteId, url, pageType }) {
-  const now = nowIso();
-
-  const { data: existing, error: existingError } = await supabase
-    .from("scc_pages")
-    .select("id")
-    .eq("site_id", siteId)
-    .eq("url", url)
-    .maybeSingle();
-
-  if (existingError) throw existingError;
-
-  if (existing?.id) {
-    const { error: updateError } = await supabase
-      .from("scc_pages")
-      .update({
-        page_type: pageType,
-        last_seen_at: now,
-      })
-      .eq("id", existing.id);
-
-    if (updateError) throw updateError;
-    return existing.id;
+  if (error) {
+    console.error(`[snapshot summary update] snapshot=${snapshotId}`, error.message);
   }
-
-  const { data: inserted, error: insertError } = await supabase
-    .from("scc_pages")
-    .insert({
-      site_id: siteId,
-      url,
-      page_type: pageType,
-      first_seen_at: now,
-      last_seen_at: now,
-    })
-    .select("id")
-    .single();
-
-  if (insertError) throw insertError;
-  return inserted.id;
-}
-
-async function upsertPageSnapshotCrawl({ snapshotId, pageId, crawlRow }) {
-  const { error } = await supabase
-    .from("scc_page_snapshot_crawl")
-    .upsert(
-      {
-        snapshot_id: snapshotId,
-        page_id: pageId,
-        ...crawlRow,
-      },
-      { onConflict: "snapshot_id,page_id" }
-    );
-
-  if (error) throw error;
-}
-
-async function upsertPageSnapshotMetrics({ snapshotId, pageId, metricsRow }) {
-  const { error } = await supabase
-    .from("scc_page_snapshot_metrics")
-    .upsert(
-      {
-        snapshot_id: snapshotId,
-        page_id: pageId,
-        ...metricsRow,
-      },
-      { onConflict: "snapshot_id,page_id" }
-    );
-
-  if (error) throw error;
-}
-
-async function replaceActions({ snapshotId, pageId, actions }) {
-  const { error: deleteError } = await supabase
-    .from("scc_actions")
-    .delete()
-    .eq("snapshot_id", snapshotId)
-    .eq("page_id", pageId);
-
-  if (deleteError) throw deleteError;
-  if (!actions.length) return;
-
-  const rows = actions.map((action) => ({
-    snapshot_id: snapshotId,
-    page_id: pageId,
-    query_id: null,
-    action_type: action.action_type,
-    summary: action.summary,
-    priority: action.priority,
-    status: action.status || "pending",
-    title: action.title,
-    why_it_matters: action.why_it_matters,
-    technical_reason: action.technical_reason,
-    expected_impact_range: action.expected_impact_range,
-    steps: action.steps,
-    severity: action.severity,
-  }));
-
-  const { error: insertError } = await supabase.from("scc_actions").insert(rows);
-  if (insertError) throw insertError;
 }
 
 async function processSinglePage({
@@ -1636,6 +1477,7 @@ async function processSinglePage({
   url,
   depth,
   seedUrl,
+  summaryState,
 }) {
   let fetched;
   let fetchError = null;
@@ -1735,6 +1577,28 @@ async function processSinglePage({
 
     await replaceActions({ snapshotId, pageId, actions });
 
+    if (summaryState) {
+      summaryState.errors_count += 1;
+      registerSummaryPage(summaryState, {
+        url,
+        pageType,
+        structuralScore,
+        visibilityScore,
+        revenueScore,
+        paidRiskScore,
+        pageOpportunityScore,
+        priorityBucket,
+        indexable: false,
+        canonicalOk: false,
+        hasTitle: false,
+        hasMeta: false,
+        hasH1: false,
+        wordCount: 0,
+        loadMs: null,
+        internalLinkDepth: depth,
+      });
+    }
+
     return {
       stored: true,
       url,
@@ -1782,6 +1646,7 @@ async function processSinglePage({
     const revenueScore = Math.round(getPageIntentWeight(pageType) * 100);
     const paidRiskScore = 0;
     const pageOpportunityScore = 10;
+    const priorityBucket = "Tier 4";
 
     await upsertPageSnapshotMetrics({
       snapshotId,
@@ -1810,11 +1675,32 @@ async function processSinglePage({
         revenue_score: revenueScore,
         paid_risk_score: paidRiskScore,
         page_opportunity_score: pageOpportunityScore,
-        priority_bucket: "Tier 4",
+        priority_bucket: priorityBucket,
       },
     });
 
     await replaceActions({ snapshotId, pageId, actions: [] });
+
+    if (summaryState) {
+      registerSummaryPage(summaryState, {
+        url: effectiveUrl,
+        pageType,
+        structuralScore,
+        visibilityScore,
+        revenueScore,
+        paidRiskScore,
+        pageOpportunityScore,
+        priorityBucket,
+        indexable: false,
+        canonicalOk: false,
+        hasTitle: false,
+        hasMeta: false,
+        hasH1: false,
+        wordCount: 0,
+        loadMs: fetched.loadMs,
+        internalLinkDepth: depth,
+      });
+    }
 
     return {
       stored: true,
@@ -1977,6 +1863,27 @@ async function processSinglePage({
 
   await replaceActions({ snapshotId, pageId, actions });
 
+  if (summaryState) {
+    registerSummaryPage(summaryState, {
+      url: effectiveUrl,
+      pageType,
+      structuralScore,
+      visibilityScore,
+      revenueScore,
+      paidRiskScore,
+      pageOpportunityScore,
+      priorityBucket,
+      indexable: extracted.indexable,
+      canonicalOk,
+      hasTitle,
+      hasMeta,
+      hasH1,
+      wordCount: extracted.wordCount,
+      loadMs: extracted.loadMs,
+      internalLinkDepth: depth,
+    });
+  }
+
   return {
     stored: true,
     url: effectiveUrl,
@@ -2057,6 +1964,7 @@ async function runCrawlJob(job) {
   const siblingTypeCounts = {};
   const queue = [];
   const queueState = createQueueState();
+  const summaryState = createSnapshotSummaryState(seedUrl);
 
   const heartbeatTimer = setInterval(() => {
     heartbeat(jobId);
@@ -2072,6 +1980,7 @@ async function runCrawlJob(job) {
       url: seedUrl,
       depth: 0,
       seedUrl,
+      summaryState,
     });
 
     seen.add(homepageResult.url);
@@ -2087,6 +1996,10 @@ async function runCrawlJob(job) {
     await updateJobProgress(jobId, pagesDone, errorsCount);
 
     if (pagesDone >= maxPages) {
+      summaryState.site_type = "mixed";
+      const summaryJson = buildSnapshotSummary(summaryState);
+      await updateSnapshotSummary(snapshotId, summaryJson);
+
       clearInterval(heartbeatTimer);
       await markSnapshotFinished(snapshotId);
       await completeJob(jobId, true, null);
@@ -2114,6 +2027,7 @@ async function runCrawlJob(job) {
     }
 
     const siteType = inferSiteTypeFromHomepage(homepageLinks);
+    summaryState.site_type = siteType;
     console.log(`[site type inferred] ${siteType}`);
 
     for (const link of homepageLinks) {
@@ -2168,6 +2082,7 @@ async function runCrawlJob(job) {
           url: next.url,
           depth: next.depth,
           seedUrl,
+          summaryState,
         });
 
         seen.add(pageResult.url);
@@ -2223,10 +2138,15 @@ async function runCrawlJob(job) {
         }
       } catch (err) {
         errorsCount += 1;
+        summaryState.errors_count += 1;
         console.error(`[page error] ${next.url}`, err.message);
         await updateJobProgress(jobId, pagesDone, errorsCount);
       }
     }
+
+    summaryState.errors_count = errorsCount;
+    const summaryJson = buildSnapshotSummary(summaryState);
+    await updateSnapshotSummary(snapshotId, summaryJson);
 
     clearInterval(heartbeatTimer);
     await markSnapshotFinished(snapshotId);
