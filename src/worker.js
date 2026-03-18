@@ -1938,6 +1938,33 @@ async function markSnapshotFailed(snapshotId, stage, message) {
   if (error) console.error(`[snapshot failed update] snapshot=${snapshotId}`, error.message);
 }
 
+async function heartbeat(jobId) {
+  const { error } = await supabase.rpc("scc_job_heartbeat", {
+    p_job_id: jobId,
+  });
+
+  if (error) {
+    console.error(`[job heartbeat] job=${jobId}`, error.message);
+  }
+}
+
+async function completeJob(jobId, status, errorMessage = null) {
+  const payload = {
+    p_job_id: jobId,
+    p_status: status,
+  };
+
+  if (errorMessage) {
+    payload.p_error = String(errorMessage).slice(0, 1000);
+  }
+
+  const { error } = await supabase.rpc("scc_complete_crawl_job", payload);
+
+  if (error) {
+    console.error(`[job complete] job=${jobId} status=${status}`, error.message);
+  }
+}
+
 async function runCrawlJob(job) {
   const jobId = job.id;
   const siteId = job.site_id;
@@ -2000,9 +2027,8 @@ async function runCrawlJob(job) {
       const summaryJson = buildSnapshotSummary(summaryState);
       await updateSnapshotSummary(snapshotId, summaryJson);
 
-      clearInterval(heartbeatTimer);
       await markSnapshotFinished(snapshotId);
-      await completeJob(jobId, true, null);
+      await completeJob(jobId, "completed");
       console.log(`[job done] id=${jobId} pages=${pagesDone}`);
       return;
     }
@@ -2148,16 +2174,55 @@ async function runCrawlJob(job) {
     const summaryJson = buildSnapshotSummary(summaryState);
     await updateSnapshotSummary(snapshotId, summaryJson);
 
-    clearInterval(heartbeatTimer);
     await markSnapshotFinished(snapshotId);
-    await completeJob(jobId, true, null);
+    await completeJob(jobId, "completed");
     console.log(`[job done] id=${jobId} pages=${pagesDone} errors=${errorsCount}`);
   } catch (err) {
-    clearInterval(heartbeatTimer);
     console.error(`[job failed] id=${jobId}`, err);
     await markSnapshotFailed(snapshotId, "worker_run", err.message || "Unknown crawl error");
-    await completeJob(jobId, false, err.message || "Unknown crawl error");
+    await completeJob(jobId, "failed", err.message || "Unknown crawl error");
     throw err;
+  } finally {
+    clearInterval(heartbeatTimer);
+
+    const { error } = await supabase
+      .from("scc_crawl_jobs")
+      .update({
+        pages_done: pagesDone,
+        errors_count: errorsCount,
+      })
+      .eq("id", jobId);
+
+    if (error) {
+      console.error(`[job counters update] job=${jobId}`, error.message);
+    }
+  }
+}
+
+async function heartbeat(jobId) {
+  const { error } = await supabase.rpc("scc_job_heartbeat", {
+    p_job_id: jobId,
+  });
+
+  if (error) {
+    console.error(`[job heartbeat] job=${jobId}`, error.message);
+  }
+}
+
+async function completeJob(jobId, status, errorMessage = null) {
+  const payload = {
+    p_job_id: jobId,
+    p_status: status,
+  };
+
+  if (errorMessage) {
+    payload.p_error = String(errorMessage).slice(0, 1000);
+  }
+
+  const { error } = await supabase.rpc("scc_complete_crawl_job", payload);
+
+  if (error) {
+    console.error(`[job complete] job=${jobId} status=${status}`, error.message);
   }
 }
 
@@ -2197,6 +2262,9 @@ async function main() {
       }
       await runCrawlJob(job);
     } catch (err) {
+      await markSnapshotFailed(snapshotId, "crawl_execution", err.message || "Unknown worker error");
+await completeJob(jobId, "failed", err.message || "Unknown worker error");
+throw err;
       console.error("[worker loop error]", err);
       await sleep(POLL_MS);
     }
