@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 const RESCUE_STALE_AFTER_MIN = Number(process.env.RESCUE_STALE_AFTER_MIN || 10);
 const USER_AGENT =
   process.env.USER_AGENT ||
-  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.3; +https://marketersquest.com)";
+  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.4; +https://marketersquest.com)";
 const MAX_REDIRECTS = Number(process.env.MAX_REDIRECTS || 5);
 
 const NON_HTML_EXTENSIONS = [
@@ -621,7 +621,7 @@ function registerSelectedPage(queueState, pageType, familyKey) {
 }
 
 function getContentMixTargets(maxPages) {
-  const usable = Math.max(0, maxPages - 1); // homepage already consumed usually
+  const usable = Math.max(0, maxPages - 1);
   return {
     minArticles: Math.max(2, Math.min(4, Math.floor(usable * 0.45))),
     maxArchives: Math.max(1, Math.min(2, Math.ceil(usable * 0.25))),
@@ -643,7 +643,6 @@ function applyQueueV3MixAdjustments({
   let adjusted = score;
 
   const selectedTypeCounts = queueState.selectedTypeCounts;
-  const enqueuedTypeCounts = queueState.enqueuedTypeCounts;
   const selectedFamilyCounts = queueState.selectedFamilyCounts;
   const familySelected = getCount(selectedFamilyCounts, familyKey);
   const familyEnqueued = getCount(queueState.enqueuedFamilyCounts, familyKey);
@@ -943,6 +942,85 @@ function evaluateCanonicalOk(finalUrl, canonicalUrl) {
     : false;
 }
 
+function getPageIntentWeight(pageType) {
+  const map = {
+    homepage: 0.88,
+    conversion: 1.0,
+    pricing: 0.96,
+    service: 0.9,
+    product: 0.9,
+    category: 0.72,
+    feature: 0.68,
+    case_study: 0.62,
+    proof: 0.58,
+    article: 0.45,
+    archive: 0.22,
+    about: 0.3,
+    location: 0.74,
+    general: 0.38,
+    contact: 0.16,
+    policy: 0.04,
+  };
+  return map[pageType] ?? 0.35;
+}
+
+function getVisibilityPotential(pageType) {
+  const map = {
+    homepage: 0.92,
+    conversion: 0.82,
+    pricing: 0.86,
+    service: 0.88,
+    product: 0.86,
+    category: 0.78,
+    feature: 0.68,
+    case_study: 0.6,
+    proof: 0.52,
+    article: 0.84,
+    archive: 0.5,
+    about: 0.42,
+    location: 0.7,
+    general: 0.48,
+    contact: 0.18,
+    policy: 0.05,
+  };
+  return map[pageType] ?? 0.45;
+}
+
+function getThinContentThreshold(pageType) {
+  const thresholds = {
+    homepage: 250,
+    service: 500,
+    pricing: 350,
+    conversion: 220,
+    product: 250,
+    category: 180,
+    article: 700,
+    archive: 120,
+    feature: 300,
+    case_study: 450,
+    proof: 180,
+    about: 250,
+    location: 250,
+    general: 250,
+    contact: 80,
+    policy: 80,
+  };
+
+  return thresholds[pageType] ?? 250;
+}
+
+function computeContentDepthScore(wordCount, pageType) {
+  const threshold = getThinContentThreshold(pageType);
+
+  if (wordCount <= 0) return 0;
+  if (wordCount >= threshold * 1.75) return 100;
+  if (wordCount >= threshold * 1.2) return 85;
+  if (wordCount >= threshold) return 70;
+  if (wordCount >= threshold * 0.7) return 45;
+  if (wordCount >= threshold * 0.4) return 25;
+  return 10;
+}
+
 function computeStructuralScore({
   indexable,
   canonicalOk,
@@ -951,19 +1029,29 @@ function computeStructuralScore({
   hasH1,
   wordCount,
   statusCode,
+  pageType,
+  loadMs,
+  schemaTypes,
 }) {
   let score = 0;
 
-  if (statusCode >= 200 && statusCode < 300) score += 15;
-  if (indexable) score += 20;
-  if (hasTitle) score += 15;
+  if (statusCode >= 200 && statusCode < 300) score += 16;
+  if (indexable) score += 18;
+  if (hasTitle) score += 14;
   if (hasMeta) score += 10;
-  if (hasH1) score += 15;
+  if (hasH1) score += 12;
   if (canonicalOk) score += 10;
-  if (wordCount >= 300) score += 10;
-  if (wordCount >= 700) score += 5;
 
-  return clamp(score, 0, 100);
+  const contentDepthScore = computeContentDepthScore(wordCount, pageType);
+  score += Math.round(contentDepthScore * 0.14);
+
+  if ((schemaTypes || []).length > 0) score += 5;
+
+  if (loadMs && loadMs < 1200) score += 6;
+  else if (loadMs && loadMs < 2500) score += 4;
+  else if (loadMs && loadMs > 5000) score -= 4;
+
+  return clamp(Math.round(score), 0, 100);
 }
 
 function computeVisibilityScore({
@@ -971,72 +1059,57 @@ function computeVisibilityScore({
   structuralScore,
   pageType,
   statusCode,
+  internalLinkDepth,
+  noindex,
+  loadMs,
 }) {
   let score = 0;
 
-  if (statusCode >= 200 && statusCode < 300) score += 20;
-  if (indexable) score += 30;
-  score += structuralScore * 0.35;
+  const visibilityPotential = getVisibilityPotential(pageType);
+  score += visibilityPotential * 40;
 
-  const typeBonus = {
-    homepage: 18,
-    pricing: 14,
-    conversion: 14,
-    service: 12,
-    product: 12,
-    category: 8,
-    archive: 6,
-    article: 10,
-    location: 8,
-    proof: 5,
-    case_study: 5,
-    about: 2,
-    general: 2,
-    contact: 0,
-    policy: 0,
-    feature: 7,
-  };
+  score += structuralScore * 0.38;
 
-  score += typeBonus[pageType] || 0;
+  if (statusCode >= 200 && statusCode < 300) score += 10;
+  if (indexable) score += 12;
+  if (noindex) score -= 22;
+
+  if (internalLinkDepth === 0) score += 10;
+  else if (internalLinkDepth === 1) score += 6;
+  else if (internalLinkDepth >= 3) score -= 6;
+
+  if (loadMs && loadMs > 5000) score -= 5;
 
   return clamp(Math.round(score), 0, 100);
 }
 
 function computeRevenueScore(pageType) {
-  const typeRevenueScore = {
-    homepage: 70,
-    conversion: 92,
-    pricing: 90,
-    service: 84,
-    product: 84,
-    category: 72,
-    location: 68,
-    proof: 58,
-    case_study: 54,
-    feature: 58,
-    about: 28,
-    general: 30,
-    article: 34,
-    archive: 20,
-    contact: 22,
-    policy: 5,
-  };
-
-  return clamp(typeRevenueScore[pageType] || 30, 0, 100);
+  return clamp(Math.round(getPageIntentWeight(pageType) * 100), 0, 100);
 }
 
-function computePaidRiskScore({ pageType, indexable, structuralScore }) {
+function computePaidRiskScore({
+  pageType,
+  indexable,
+  structuralScore,
+  visibilityScore,
+  loadMs,
+}) {
   let score = 0;
 
-  if (["pricing", "conversion", "service", "product", "category"].includes(pageType)) {
-    score += 35;
+  const intentWeight = getPageIntentWeight(pageType);
+  score += intentWeight * 42;
+
+  if (!indexable) score += 24;
+  if (structuralScore < 65) score += 18;
+  if (structuralScore < 45) score += 10;
+  if (visibilityScore < 55) score += 10;
+  if (loadMs && loadMs > 5000) score += 6;
+
+  if (["policy", "contact", "about"].includes(pageType)) {
+    score -= 18;
   }
 
-  if (!indexable) score += 30;
-  if (structuralScore < 60) score += 25;
-  if (structuralScore < 40) score += 10;
-
-  return clamp(score, 0, 100);
+  return clamp(Math.round(score), 0, 100);
 }
 
 function computePageOpportunityScore({
@@ -1047,30 +1120,65 @@ function computePageOpportunityScore({
   indexable,
   statusCode,
   wordCount,
+  internalLinkDepth,
+  canonicalOk,
+  hasTitle,
+  hasMeta,
+  hasH1,
 }) {
+  const weakness = 100 - structuralScore;
+  const visibilityGap = 100 - visibilityScore;
+  const contentDepthScore = computeContentDepthScore(wordCount, pageType);
+  const contentGap = 100 - contentDepthScore;
+  const intentWeight = getPageIntentWeight(pageType);
+  const visibilityPotential = getVisibilityPotential(pageType);
+
   let score = 0;
 
-  const weakness = 100 - structuralScore;
-  score += weakness * 0.35;
-  score += revenueScore * 0.35;
-  score += visibilityScore * 0.20;
+  score += weakness * 0.28;
+  score += visibilityGap * 0.18;
+  score += revenueScore * 0.28;
+  score += visibilityPotential * 14;
+  score += contentGap * 0.12;
 
-  if (!indexable) score += 12;
-  if (statusCode >= 400) score += 12;
-  if (wordCount < 250 && ["service", "pricing", "product", "category", "article", "general", "homepage"].includes(pageType)) {
+  if (!indexable) score += 14;
+  if (statusCode >= 400) score += 14;
+  if (!canonicalOk) score += 5;
+  if (!hasTitle) score += 6;
+  if (!hasMeta) score += 5;
+  if (!hasH1) score += 5;
+
+  if (internalLinkDepth >= 2) score += 5;
+  if (internalLinkDepth >= 3) score += 4;
+
+  if (pageType === "article" && weakness >= 35) score += 6;
+  if (pageType === "homepage" && weakness >= 20) score += 8;
+  if (["pricing", "conversion", "service", "product"].includes(pageType) && weakness >= 20) {
     score += 10;
   }
 
-  if (["pricing", "conversion", "service", "product"].includes(pageType)) {
-    score += 8;
+  if (["archive", "policy", "contact"].includes(pageType)) {
+    score -= 10;
+  }
+
+  if (pageType === "about") {
+    score -= 4;
+  }
+
+  if (intentWeight <= 0.1) {
+    score = Math.min(score, 24);
   }
 
   return clamp(Math.round(score), 0, 100);
 }
 
-function computePriorityBucket(opportunityScore) {
-  if (opportunityScore >= 80) return "Tier 1";
-  if (opportunityScore >= 60) return "Tier 2";
+function computePriorityBucket(opportunityScore, revenueScore, pageType) {
+  if (["policy", "contact"].includes(pageType) && opportunityScore < 30) {
+    return "Tier 4";
+  }
+
+  if (opportunityScore >= 78) return "Tier 1";
+  if (opportunityScore >= 58) return "Tier 2";
   if (opportunityScore >= 35) return "Tier 3";
   return "Tier 4";
 }
@@ -1230,7 +1338,8 @@ function buildActions({
     });
   }
 
-  if (wordCount < 250 && ["service", "pricing", "product", "category", "article", "general", "homepage"].includes(pageType)) {
+  const thinThreshold = getThinContentThreshold(pageType);
+  if (wordCount < thinThreshold && ["service", "pricing", "product", "category", "article", "general", "homepage", "case_study", "feature"].includes(pageType)) {
     pushAction({
       actionType: "expand_content",
       summary: "The page content looks thin for its intent.",
@@ -1238,7 +1347,7 @@ function buildActions({
       severity: "medium",
       titleText: "Expand thin content",
       whyItMatters: "Thin pages often struggle to rank and convert because they lack depth and clarity.",
-      technicalReason: `The page appears to contain only about ${wordCount} words.`,
+      technicalReason: `The page appears to contain only about ${wordCount} words, which is below the expected depth for this page type.`,
       expectedImpactRange: "Medium",
       steps: [
         "Add deeper information related to the page topic.",
@@ -1268,15 +1377,15 @@ function buildActions({
     });
   }
 
-  if (pageOpportunityScore >= 80 && ["pricing", "conversion", "service", "product"].includes(pageType)) {
+  if (pageOpportunityScore >= 80 && ["pricing", "conversion", "service", "product", "homepage"].includes(pageType)) {
     pushAction({
-      actionType: "prioritize_commercial_page",
-      summary: "This is a high-opportunity commercial page and should be prioritized in your SEO roadmap.",
+      actionType: "prioritize_high_value_page",
+      summary: "This is a high-opportunity page and should be prioritized in your SEO roadmap.",
       priority: "critical",
       severity: "high",
-      titleText: "Prioritize this commercial page",
-      whyItMatters: "Improvements on high-intent commercial pages can have outsized traffic and revenue impact.",
-      technicalReason: "The page combines strong business intent with meaningful optimization gaps.",
+      titleText: "Prioritize this page",
+      whyItMatters: "Improvements on high-value pages can drive outsized traffic, leads, or revenue impact.",
+      technicalReason: "The page combines strong business importance with meaningful optimization gaps.",
       expectedImpactRange: "High",
       steps: [
         "Address all technical and content issues on this page first.",
@@ -1539,10 +1648,10 @@ async function processSinglePage({
         paid_revenue: 0,
         structural_score: 0,
         visibility_score: 0,
-        revenue_score: 0,
-        paid_risk_score: 0,
-        page_opportunity_score: 35,
-        priority_bucket: "Tier 3",
+        revenue_score: Math.round(getPageIntentWeight(pageType) * 100),
+        paid_risk_score: Math.round(getPageIntentWeight(pageType) * 40),
+        page_opportunity_score: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? 52 : 35,
+        priority_bucket: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? "Tier 3" : "Tier 4",
       },
     });
 
@@ -1637,7 +1746,7 @@ async function processSinglePage({
         paid_revenue: 0,
         structural_score: 0,
         visibility_score: 0,
-        revenue_score: 0,
+        revenue_score: Math.round(getPageIntentWeight(pageType) * 100),
         paid_risk_score: 0,
         page_opportunity_score: 10,
         priority_bucket: "Tier 4",
@@ -1692,6 +1801,9 @@ async function processSinglePage({
     hasH1,
     wordCount: extracted.wordCount,
     statusCode: extracted.statusCode,
+    pageType,
+    loadMs: extracted.loadMs,
+    schemaTypes: extracted.schemaTypes,
   });
 
   const visibilityScore = computeVisibilityScore({
@@ -1699,6 +1811,9 @@ async function processSinglePage({
     structuralScore,
     pageType,
     statusCode: extracted.statusCode,
+    internalLinkDepth: depth,
+    noindex: extracted.noindex,
+    loadMs: extracted.loadMs,
   });
 
   const revenueScore = computeRevenueScore(pageType);
@@ -1707,6 +1822,8 @@ async function processSinglePage({
     pageType,
     indexable: extracted.indexable,
     structuralScore,
+    visibilityScore,
+    loadMs: extracted.loadMs,
   });
 
   const pageOpportunityScore = computePageOpportunityScore({
@@ -1717,12 +1834,17 @@ async function processSinglePage({
     indexable: extracted.indexable,
     statusCode: extracted.statusCode,
     wordCount: extracted.wordCount,
+    internalLinkDepth: depth,
+    canonicalOk,
+    hasTitle,
+    hasMeta,
+    hasH1,
   });
 
-  const priorityBucket = computePriorityBucket(pageOpportunityScore);
+  const priorityBucket = computePriorityBucket(pageOpportunityScore, revenueScore, pageType);
 
   console.log(
-    `[page classified] ${effectiveUrl} -> ${pageType} depth=${depth} words=${extracted.wordCount}`
+    `[page scored] ${effectiveUrl} -> ${pageType} structural=${structuralScore} visibility=${visibilityScore} revenue=${revenueScore} opp=${pageOpportunityScore}`
   );
 
   await upsertPageSnapshotCrawl({
