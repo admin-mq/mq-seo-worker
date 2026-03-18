@@ -2171,6 +2171,19 @@ async function rescueStaleJobs() {
   }
 }
 
+async function claimNextJob() {
+  const { data, error } = await supabase.rpc("scc_claim_next_job", {
+    p_worker_id: WORKER_ID,
+  });
+
+  if (error) throw error;
+  if (!data) return null;
+
+  if (Array.isArray(data)) return data[0] || null;
+  if (typeof data === "object" && data.job) return data.job;
+  return data;
+}
+
 async function main() {
   console.log(`[worker boot] ${WORKER_ID}`);
 
