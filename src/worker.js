@@ -22,13 +22,13 @@ const WORKER_ID =
   `worker-${Math.random().toString(36).slice(2, 10)}`;
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
-const REQUEST_TIMEOUT_MS = Number(process.env.CRAWL_REQUEST_TIMEOUT_MS || 15000);
+const REQUEST_TIMEOUT_MS = Number(process.env.CRAWL_REQUEST_TIMEOUT_MS || 10000);
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS || 10000);
 const RESCUE_STALE_MINUTES = Number(process.env.RESCUE_STALE_MINUTES || 10);
 
-const DEFAULT_MAX_PAGES = Number(process.env.CRAWL_MAX_PAGES || 25);
-const DEFAULT_MAX_DEPTH = Number(process.env.CRAWL_MAX_DEPTH || 2);
-const DEFAULT_CRAWL_DELAY_MS = Number(process.env.CRAWL_DELAY_MS || 700);
+const DEFAULT_MAX_PAGES = Number(process.env.CRAWL_MAX_PAGES || 8);
+const DEFAULT_MAX_DEPTH = Number(process.env.CRAWL_MAX_DEPTH || 1);
+const DEFAULT_CRAWL_DELAY_MS = Number(process.env.CRAWL_DELAY_MS || 200);
 
 // =====================================================
 // LOGGING
@@ -45,6 +45,10 @@ function warn(...args) {
 function errorLog(...args) {
   console.error(new Date().toISOString(), ...args);
 }
+
+log(
+  `[CONFIG] max_pages=${DEFAULT_MAX_PAGES}, max_depth=${DEFAULT_MAX_DEPTH}, delay=${DEFAULT_CRAWL_DELAY_MS}, timeout=${REQUEST_TIMEOUT_MS}`
+);
 
 // =====================================================
 // BASIC UTILS
@@ -191,6 +195,119 @@ function shouldEnqueueUrl({
   if (queued.has(fp)) return false;
 
   return true;
+}
+
+// =====================================================
+// PRIORITY QUEUE LOGIC
+// =====================================================
+
+function getPathname(urlString) {
+  try {
+    return new URL(urlString).pathname.toLowerCase();
+  } catch {
+    return "/";
+  }
+}
+
+function getQueryPenalty(urlString) {
+  try {
+    const u = new URL(urlString);
+    const params = [...u.searchParams.keys()];
+    if (params.length === 0) return 0;
+    if (params.length <= 2) return -8;
+    return -18;
+  } catch {
+    return 0;
+  }
+}
+
+function getSegmentCount(urlString) {
+  try {
+    const pathname = new URL(urlString).pathname;
+    return pathname.split("/").filter(Boolean).length;
+  } catch {
+    return 99;
+  }
+}
+
+function looksLowValuePath(pathname) {
+  return (
+    /\/privacy/.test(pathname) ||
+    /\/terms/.test(pathname) ||
+    /\/cookies?/.test(pathname) ||
+    /\/login/.test(pathname) ||
+    /\/signin/.test(pathname) ||
+    /\/signup/.test(pathname) ||
+    /\/account/.test(pathname) ||
+    /\/cart/.test(pathname) ||
+    /\/checkout/.test(pathname) ||
+    /\/wishlist/.test(pathname) ||
+    /\/thank-you/.test(pathname) ||
+    /\/thankyou/.test(pathname) ||
+    /\/wp-admin/.test(pathname) ||
+    /\/feed/.test(pathname) ||
+    /\/author/.test(pathname) ||
+    /\/tag\//.test(pathname) ||
+    /\/page\/\d+/.test(pathname)
+  );
+}
+
+function computeUrlPriority(urlString, depth = 0, isSeed = false) {
+  const pathname = getPathname(urlString);
+  const segmentCount = getSegmentCount(urlString);
+
+  let score = 0;
+
+  if (isSeed) score += 100;
+  if (pathname === "/" || pathname === "") score += 90;
+
+  // Strong business / nav pages
+  if (/\/pricing/.test(pathname)) score += 70;
+  if (/\/services?/.test(pathname)) score += 65;
+  if (/\/solutions?/.test(pathname)) score += 60;
+  if (/\/products?/.test(pathname)) score += 65;
+  if (/\/collections?/.test(pathname)) score += 45;
+  if (/\/category/.test(pathname)) score += 40;
+  if (/\/contact/.test(pathname)) score += 50;
+  if (/\/about/.test(pathname)) score += 45;
+  if (/\/team/.test(pathname)) score += 30;
+  if (/\/company/.test(pathname)) score += 30;
+  if (/\/shop/.test(pathname)) score += 45;
+
+  // Useful content pages
+  if (/\/blog|\/news|\/article|\/guides|\/insights/.test(pathname)) score += 18;
+
+  // Homepage-linked shallow URLs tend to matter more
+  if (depth === 0) score += 50;
+  if (depth === 1) score += 25;
+  if (depth === 2) score += 10;
+  if (depth >= 3) score -= 10;
+
+  // Simpler, cleaner URLs get a small boost
+  if (segmentCount <= 1) score += 18;
+  else if (segmentCount === 2) score += 10;
+  else if (segmentCount >= 4) score -= 8;
+
+  // Parameter-heavy URLs are usually less useful in a fast scan
+  score += getQueryPenalty(urlString);
+
+  // Low-value/system pages should sink
+  if (looksLowValuePath(pathname)) score -= 70;
+
+  return score;
+}
+
+function sortQueueByPriority(queue) {
+  queue.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    return a.url.localeCompare(b.url);
+  });
+}
+
+function enqueueWithPriority(queue, item) {
+  queue.push(item);
+  sortQueueByPriority(queue);
 }
 
 // =====================================================
@@ -533,7 +650,6 @@ async function getOrCreatePage({ siteId, url, pageType }) {
     .single();
 
   if (insertError) {
-    // Safe retry for race conditions or unique collisions
     const { data: fallback, error: fallbackError } = await supabase
       .from("scc_pages")
       .select("id")
@@ -1039,7 +1155,7 @@ async function processPage({
 }
 
 // =====================================================
-// MULTI-PAGE CRAWL ENGINE
+// MULTI-PAGE CRAWL ENGINE WITH PRIORITY QUEUE
 // =====================================================
 
 async function runMultiPageCrawl(job) {
@@ -1056,7 +1172,15 @@ async function runMultiPageCrawl(job) {
   const maxDepth = safeNumber(job.max_depth, DEFAULT_MAX_DEPTH);
   const crawlDelayMs = safeNumber(job.crawl_delay_ms, DEFAULT_CRAWL_DELAY_MS);
 
-  const queue = [{ url: rootUrl, depth: 0 }];
+  const queue = [
+    {
+      url: rootUrl,
+      depth: 0,
+      priority: computeUrlPriority(rootUrl, 0, true),
+      discoveredFrom: "seed",
+    },
+  ];
+
   const queued = new Set([makeFingerprint(rootUrl)]);
   const seen = new Set();
 
@@ -1071,9 +1195,12 @@ async function runMultiPageCrawl(job) {
   await markSnapshotRunning(snapshotId, "discovering");
 
   while (queue.length > 0 && pagesDone < maxPages) {
+    sortQueueByPriority(queue);
+
     const current = queue.shift();
     const currentUrl = current.url;
     const currentDepth = current.depth;
+    const currentPriority = current.priority;
     const fp = makeFingerprint(currentUrl);
 
     if (seen.has(fp)) continue;
@@ -1087,11 +1214,11 @@ async function runMultiPageCrawl(job) {
 
     await updateSnapshotProgress(
       snapshotId,
-      `crawling ${pagesDone + 1}/${maxPages} | depth ${currentDepth} | ${currentUrl.slice(0, 180)}`
+      `crawling ${pagesDone + 1}/${maxPages} | depth ${currentDepth} | priority ${currentPriority} | ${currentUrl.slice(0, 160)}`
     );
 
     log(
-      `[crawl] job=${jobId} snapshot=${snapshotId} depth=${currentDepth} fetching=${currentUrl}`
+      `[crawl] job=${jobId} depth=${currentDepth} priority=${currentPriority} fetching=${currentUrl}`
     );
 
     const fetched = await fetchPage(currentUrl);
@@ -1110,7 +1237,6 @@ async function runMultiPageCrawl(job) {
 
       await updateJobCounters(jobId, pagesDone, errorsCount);
 
-      // If homepage itself is blocked, fail the whole job
       if (pagesDone === 0 && currentDepth === 0) {
         throw new Error(
           `Crawl blocked at seed URL: ${fetched.blockedReason} (${fetched.status})`
@@ -1154,6 +1280,7 @@ async function runMultiPageCrawl(job) {
       url: processed.finalUrl,
       pageId: processed.pageId,
       depth: currentDepth,
+      priority: currentPriority,
       priorityBucket: processed.metrics.priorityBucket,
       pageOpportunityScore: processed.metrics.pageOpportunityScore,
     });
@@ -1169,6 +1296,7 @@ async function runMultiPageCrawl(job) {
 
       for (const link of links) {
         const nextDepth = currentDepth + 1;
+
         if (
           shouldEnqueueUrl({
             normalizedUrl: link,
@@ -1179,7 +1307,15 @@ async function runMultiPageCrawl(job) {
             maxDepth,
           })
         ) {
-          queue.push({ url: link, depth: nextDepth });
+          const linkPriority = computeUrlPriority(link, nextDepth, false);
+
+          enqueueWithPriority(queue, {
+            url: link,
+            depth: nextDepth,
+            priority: linkPriority,
+            discoveredFrom: processed.finalUrl,
+          });
+
           queued.add(makeFingerprint(link));
         }
       }
@@ -1221,7 +1357,6 @@ async function processClaimedJob(rawJob) {
     `[job] start id=${jobId} snapshot=${snapshotId} site=${siteId} seed=${seedUrl} max_pages=${job.max_pages} max_depth=${job.max_depth}`
   );
 
-  // Clean snapshot rows for safe retry on the same snapshot/job
   {
     const { error: metricsDeleteError } = await supabase
       .from("scc_page_snapshot_metrics")
