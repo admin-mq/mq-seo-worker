@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 const RESCUE_STALE_AFTER_MIN = Number(process.env.RESCUE_STALE_AFTER_MIN || 10);
 const USER_AGENT =
   process.env.USER_AGENT ||
-  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.4; +https://marketersquest.com)";
+  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.5; +https://marketersquest.com)";
 const MAX_REDIRECTS = Number(process.env.MAX_REDIRECTS || 5);
 
 const NON_HTML_EXTENSIONS = [
@@ -360,27 +360,15 @@ function classifyPageTypeFromSignals({
     addScore(scores, "feature", 10);
   }
 
-  if (/price|pricing|plans|cost/.test(combined)) {
-    addScore(scores, "pricing", 26);
-  }
+  if (/price|pricing|plans|cost/.test(combined)) addScore(scores, "pricing", 26);
   if (/book demo|request demo|get started|free trial|start free|contact sales|enquire now/.test(combined)) {
     addScore(scores, "conversion", 28);
   }
-  if (/service|services|solution|solutions/.test(combined)) {
-    addScore(scores, "service", 18);
-  }
-  if (/case study|success story/.test(combined)) {
-    addScore(scores, "case_study", 24);
-  }
-  if (/testimonial|review|client story/.test(combined)) {
-    addScore(scores, "proof", 18);
-  }
-  if (/about us|our company|our team/.test(combined)) {
-    addScore(scores, "about", 22);
-  }
-  if (/contact us|support/.test(combined)) {
-    addScore(scores, "contact", 22);
-  }
+  if (/service|services|solution|solutions/.test(combined)) addScore(scores, "service", 18);
+  if (/case study|success story/.test(combined)) addScore(scores, "case_study", 24);
+  if (/testimonial|review|client story/.test(combined)) addScore(scores, "proof", 18);
+  if (/about us|our company|our team/.test(combined)) addScore(scores, "about", 22);
+  if (/contact us|support/.test(combined)) addScore(scores, "contact", 22);
   if (/category|categories|browse|archive|archives/.test(combined)) {
     addScore(scores, "archive", 22);
     addScore(scores, "category", 16);
@@ -443,9 +431,7 @@ function classifyPageTypeFromSignals({
   ];
 
   for (const rule of hardTypes) {
-    if ((scores[rule.type] || 0) >= rule.min) {
-      return rule.type;
-    }
+    if ((scores[rule.type] || 0) >= rule.min) return rule.type;
   }
 
   const winner = bestScoredType(scores, "general");
@@ -517,15 +503,10 @@ function extractNavLinks($, baseUrl) {
       if (!urlObj) return;
 
       const normalized = normalizeUrl(urlObj.toString());
-      if (!normalized) return;
-      if (seen.has(normalized)) return;
+      if (!normalized || seen.has(normalized)) return;
 
       seen.add(normalized);
-      links.push({
-        url: normalized,
-        anchorText,
-        source: "nav",
-      });
+      links.push({ url: normalized, anchorText, source: "nav" });
     });
   });
 
@@ -560,11 +541,7 @@ function extractInternalLinks($, pageUrl, seedUrl) {
       $(el).closest("header").length > 0 ||
       $(el).attr("role") === "menuitem";
 
-    results.push({
-      url: normalized,
-      anchorText,
-      inNav,
-    });
+    results.push({ url: normalized, anchorText, inNav });
   });
 
   return results;
@@ -641,7 +618,6 @@ function applyQueueV3MixAdjustments({
   maxPages,
 }) {
   let adjusted = score;
-
   const selectedTypeCounts = queueState.selectedTypeCounts;
   const selectedFamilyCounts = queueState.selectedFamilyCounts;
   const familySelected = getCount(selectedFamilyCounts, familyKey);
@@ -655,15 +631,8 @@ function applyQueueV3MixAdjustments({
 
     if (pageType === "article") {
       adjusted += 18;
-
-      if (selectedArticles < targets.minArticles) {
-        adjusted += 24;
-      }
-
-      if (parentPageType === "archive" || parentPageType === "category") {
-        adjusted += 18;
-      }
-
+      if (selectedArticles < targets.minArticles) adjusted += 24;
+      if (parentPageType === "archive" || parentPageType === "category") adjusted += 18;
       if (/read more|continue reading|article|post|story|guide/.test((anchorText || "").toLowerCase())) {
         adjusted += 10;
       }
@@ -671,55 +640,26 @@ function applyQueueV3MixAdjustments({
 
     if (pageType === "archive") {
       adjusted -= 10;
-
-      if (selectedArchives >= targets.maxArchives) {
-        adjusted -= 34;
-      }
-
-      if (familySelected >= 1) {
-        adjusted -= 12;
-      }
-
-      if (familyEnqueued >= 2) {
-        adjusted -= 8;
-      }
+      if (selectedArchives >= targets.maxArchives) adjusted -= 34;
+      if (familySelected >= 1) adjusted -= 12;
+      if (familyEnqueued >= 2) adjusted -= 8;
     }
 
     if (pageType === "category") {
       adjusted -= 4;
-
-      if (selectedCategories >= targets.maxCategories) {
-        adjusted -= 24;
-      }
-
-      if (familySelected >= 1) {
-        adjusted -= 10;
-      }
+      if (selectedCategories >= targets.maxCategories) adjusted -= 24;
+      if (familySelected >= 1) adjusted -= 10;
     }
 
-    if (familySelected >= targets.maxSameFamily) {
-      adjusted -= 20;
-    }
-
-    if (pageType === "general" && parentPageType === "archive") {
-      adjusted -= 8;
-    }
-
-    if (
-      selectedArticles < targets.minArticles &&
-      (pageType === "archive" || pageType === "category")
-    ) {
+    if (familySelected >= targets.maxSameFamily) adjusted -= 20;
+    if (pageType === "general" && parentPageType === "archive") adjusted -= 8;
+    if (selectedArticles < targets.minArticles && (pageType === "archive" || pageType === "category")) {
       adjusted -= 12;
     }
   }
 
-  if (siteType === "service") {
-    if (pageType === "article" || pageType === "archive") adjusted -= 8;
-  }
-
-  if (siteType === "ecommerce") {
-    if (pageType === "article" || pageType === "archive") adjusted -= 10;
-  }
+  if (siteType === "service" && (pageType === "article" || pageType === "archive")) adjusted -= 8;
+  if (siteType === "ecommerce" && (pageType === "article" || pageType === "archive")) adjusted -= 10;
 
   return adjusted;
 }
@@ -735,11 +675,7 @@ function buildPriorityScore({
   queueState,
   maxPages,
 }) {
-  const pageType = classifyPageTypeFromSignals({
-    url: candidateUrl,
-    anchorText,
-  });
-
+  const pageType = classifyPageTypeFromSignals({ url: candidateUrl, anchorText });
   let score = 0;
 
   const baseByType = {
@@ -835,11 +771,7 @@ function buildPriorityScore({
   if (pageType === "policy") score = Math.min(score, 18);
   if (pageType === "contact") score = Math.min(score, 38);
 
-  return {
-    score,
-    pageType,
-    familyKey,
-  };
+  return { score, pageType, familyKey };
 }
 
 async function fetchHtml(url) {
@@ -871,10 +803,7 @@ function extractSeoData(html, url, status, contentType, loadMs, depth, seedUrl) 
   const $ = cheerio.load(html || "");
 
   const title = cleanText($("title").first().text() || "");
-  const metaDescription = cleanText(
-    $('meta[name="description"]').attr("content") || ""
-  );
-
+  const metaDescription = cleanText($('meta[name="description"]').attr("content") || "");
   const canonicalHref = $('link[rel="canonical"]').attr("href");
   const canonicalUrl = canonicalHref
     ? normalizeUrl(safeUrl(canonicalHref, url)?.toString())
@@ -1046,7 +975,6 @@ function computeStructuralScore({
   score += Math.round(contentDepthScore * 0.14);
 
   if ((schemaTypes || []).length > 0) score += 5;
-
   if (loadMs && loadMs < 1200) score += 6;
   else if (loadMs && loadMs < 2500) score += 4;
   else if (loadMs && loadMs > 5000) score -= 4;
@@ -1067,7 +995,6 @@ function computeVisibilityScore({
 
   const visibilityPotential = getVisibilityPotential(pageType);
   score += visibilityPotential * 40;
-
   score += structuralScore * 0.38;
 
   if (statusCode >= 200 && statusCode < 300) score += 10;
@@ -1104,10 +1031,7 @@ function computePaidRiskScore({
   if (structuralScore < 45) score += 10;
   if (visibilityScore < 55) score += 10;
   if (loadMs && loadMs > 5000) score += 6;
-
-  if (["policy", "contact", "about"].includes(pageType)) {
-    score -= 18;
-  }
+  if (["policy", "contact", "about"].includes(pageType)) score -= 18;
 
   return clamp(Math.round(score), 0, 100);
 }
@@ -1147,7 +1071,6 @@ function computePageOpportunityScore({
   if (!hasTitle) score += 6;
   if (!hasMeta) score += 5;
   if (!hasH1) score += 5;
-
   if (internalLinkDepth >= 2) score += 5;
   if (internalLinkDepth >= 3) score += 4;
 
@@ -1157,30 +1080,63 @@ function computePageOpportunityScore({
     score += 10;
   }
 
-  if (["archive", "policy", "contact"].includes(pageType)) {
-    score -= 10;
-  }
-
-  if (pageType === "about") {
-    score -= 4;
-  }
-
-  if (intentWeight <= 0.1) {
-    score = Math.min(score, 24);
-  }
+  if (["archive", "policy", "contact"].includes(pageType)) score -= 10;
+  if (pageType === "about") score -= 4;
+  if (intentWeight <= 0.1) score = Math.min(score, 24);
 
   return clamp(Math.round(score), 0, 100);
 }
 
 function computePriorityBucket(opportunityScore, revenueScore, pageType) {
-  if (["policy", "contact"].includes(pageType) && opportunityScore < 30) {
-    return "Tier 4";
-  }
-
+  if (["policy", "contact"].includes(pageType) && opportunityScore < 30) return "Tier 4";
   if (opportunityScore >= 78) return "Tier 1";
   if (opportunityScore >= 58) return "Tier 2";
   if (opportunityScore >= 35) return "Tier 3";
   return "Tier 4";
+}
+
+function getActionCap(pageType, pageOpportunityScore) {
+  if (["homepage", "pricing", "conversion", "service", "product"].includes(pageType)) {
+    return pageOpportunityScore >= 70 ? 5 : 4;
+  }
+  if (["article", "category", "feature", "case_study"].includes(pageType)) {
+    return 4;
+  }
+  if (["archive", "about", "location"].includes(pageType)) {
+    return 3;
+  }
+  if (["contact", "policy"].includes(pageType)) {
+    return 2;
+  }
+  return 3;
+}
+
+function getActionPriorityFromScore(score) {
+  if (score >= 90) return "critical";
+  if (score >= 72) return "high";
+  if (score >= 52) return "medium";
+  return "low";
+}
+
+function getActionSeverityFromScore(score) {
+  if (score >= 85) return "high";
+  if (score >= 55) return "medium";
+  return "low";
+}
+
+function dedupeAndLimitActions(actions, pageType, pageOpportunityScore) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const action of actions.sort((a, b) => b._sortScore - a._sortScore)) {
+    const key = `${action.action_type}::${action.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(action);
+  }
+
+  const cap = getActionCap(pageType, pageOpportunityScore);
+  return deduped.slice(0, cap).map(({ _sortScore, ...rest }) => rest);
 }
 
 function buildActions({
@@ -1196,32 +1152,38 @@ function buildActions({
   metaDescription,
   h1Count,
   pageOpportunityScore,
+  structuralScore,
+  visibilityScore,
+  revenueScore,
+  internalLinkDepth,
+  loadMs,
 }) {
   const actions = [];
+  const thinThreshold = getThinContentThreshold(pageType);
+  const isCommercial = ["homepage", "pricing", "conversion", "service", "product"].includes(pageType);
+  const isContent = ["article", "archive", "category", "case_study", "feature"].includes(pageType);
 
   const pushAction = ({
     actionType,
-    summary,
-    priority,
-    severity,
     titleText,
+    summary,
     whyItMatters,
     technicalReason,
     expectedImpactRange,
     steps,
-    score = 50,
+    score,
   }) => {
     actions.push({
       action_type: actionType,
       summary,
-      priority,
+      priority: getActionPriorityFromScore(score),
       status: "pending",
       title: titleText,
       why_it_matters: whyItMatters,
       technical_reason: technicalReason,
       expected_impact_range: expectedImpactRange,
       steps,
-      severity,
+      severity: getActionSeverityFromScore(score),
       _sortScore: score,
     });
   };
@@ -1229,196 +1191,305 @@ function buildActions({
   if (statusCode >= 400) {
     pushAction({
       actionType: "fix_status_code",
-      summary: `This page returns HTTP ${statusCode} and may be blocking SEO visibility.`,
-      priority: "critical",
-      severity: "high",
       titleText: `Fix HTTP ${statusCode} page issue`,
-      whyItMatters: "Broken pages waste crawl budget and prevent traffic from landing on usable content.",
+      summary: `This page returns HTTP ${statusCode} and may be blocking SEO visibility.`,
+      whyItMatters: "Broken or erroring pages waste crawl equity and prevent search visibility.",
       technicalReason: `The crawler received HTTP ${statusCode} for this page.`,
-      expectedImpactRange: "Medium-High",
+      expectedImpactRange: isCommercial ? "High" : "Medium-High",
       steps: [
         "Confirm whether this URL should remain live.",
         "Restore the page if it should exist.",
-        "Otherwise redirect it to the closest relevant working page.",
-        "Update internal links that still point here."
+        "Redirect it to the closest relevant page if it should not exist.",
+        "Update internal links pointing to this URL."
       ],
-      score: 98,
+      score: isCommercial ? 98 : 92,
     });
   }
 
   if (!indexable && statusCode >= 200 && statusCode < 300) {
     pushAction({
       actionType: "review_indexability",
-      summary: "This page appears live but may not be indexable.",
-      priority: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? "critical" : "high",
-      severity: "high",
       titleText: "Review indexability settings",
-      whyItMatters: "A page that cannot be indexed will struggle to earn organic visibility.",
-      technicalReason: "The page is live but crawl signals suggest it should not be indexed.",
-      expectedImpactRange: "High",
+      summary: "This page is live but may not be indexable.",
+      whyItMatters: "A live page that cannot be indexed will struggle to earn organic traffic.",
+      technicalReason: "The page appears live, but crawl signals suggest it may not be intended for indexation.",
+      expectedImpactRange: isCommercial ? "High" : "Medium-High",
       steps: [
         "Check robots meta directives on the page.",
         "Confirm whether noindex is intentional.",
         "Remove noindex from pages that should rank."
       ],
-      score: 94,
+      score: isCommercial ? 95 : 86,
     });
   }
 
   if (!hasTitle || !title || title.length < 20) {
     pushAction({
       actionType: "improve_title",
-      summary: "The page title is missing or too weak.",
-      priority: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? "high" : "medium",
-      severity: "high",
       titleText: "Improve page title",
-      whyItMatters: "Title tags are one of the strongest on-page signals for ranking and click-through.",
-      technicalReason: "The page is missing a descriptive title or the title is too short to communicate intent well.",
-      expectedImpactRange: "Medium",
+      summary: "The page title is missing or too weak.",
+      whyItMatters: "Titles are a major relevance and click-through signal in search results.",
+      technicalReason: "The page title is missing or too short to communicate page intent clearly.",
+      expectedImpactRange: isCommercial ? "Medium-High" : "Medium",
       steps: [
         "Write a unique title for this page.",
-        "Place the core keyword near the beginning.",
-        "Make the title specific to the page intent."
+        "Place the main topic near the beginning.",
+        "Match the title to the actual page intent."
       ],
-      score: 84,
+      score: isCommercial ? 84 : 72,
     });
   }
 
   if (!hasMeta || !metaDescription || metaDescription.length < 110) {
     pushAction({
       actionType: "improve_meta_description",
-      summary: "The meta description is missing or too short.",
-      priority: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? "high" : "medium",
-      severity: "medium",
       titleText: "Improve meta description",
-      whyItMatters: "A stronger meta description can improve click-through rate from search results.",
-      technicalReason: "The page lacks a clear, sufficiently descriptive meta description.",
-      expectedImpactRange: "Low-Medium",
+      summary: "The meta description is missing or too short.",
+      whyItMatters: "A clearer meta description can improve SERP click-through rate.",
+      technicalReason: "The page lacks a sufficiently descriptive meta description.",
+      expectedImpactRange: isCommercial ? "Medium" : "Low-Medium",
       steps: [
         "Write a concise description of 140 to 160 characters.",
-        "Reflect the user intent of this page.",
-        "Include a clear value proposition."
+        "Reflect the user intent of the page.",
+        "Include a clear value proposition or reason to click."
       ],
-      score: 74,
+      score: isCommercial ? 70 : 56,
     });
   }
 
   if (!hasH1) {
     pushAction({
       actionType: "add_h1",
-      summary: "This page has no H1 heading.",
-      priority: "high",
-      severity: "high",
       titleText: "Add a clear H1",
-      whyItMatters: "A clear H1 helps both users and search engines understand page focus.",
+      summary: "This page has no H1 heading.",
+      whyItMatters: "A primary H1 helps users and search engines understand page focus.",
       technicalReason: "No H1 element was found on the page.",
       expectedImpactRange: "Medium",
       steps: [
         "Add one primary H1 to the page.",
-        "Align it with the page’s core search intent.",
-        "Avoid duplicating multiple competing H1s."
+        "Align it with the page's main intent.",
+        "Avoid creating multiple competing H1s."
       ],
-      score: 82,
+      score: isCommercial ? 82 : 74,
     });
   } else if (h1Count > 1) {
     pushAction({
       actionType: "reduce_multiple_h1s",
-      summary: "This page has multiple H1 tags.",
-      priority: "medium",
-      severity: "medium",
       titleText: "Reduce multiple H1 tags",
-      whyItMatters: "Multiple H1s can weaken page hierarchy and reduce topical clarity.",
+      summary: "This page has multiple H1 tags.",
+      whyItMatters: "Multiple H1s can weaken heading hierarchy and topical clarity.",
       technicalReason: `${h1Count} H1 tags were found.`,
       expectedImpactRange: "Low-Medium",
       steps: [
         "Keep one primary H1 on the page.",
-        "Convert secondary top headings to H2 or H3."
+        "Convert secondary headings into H2 or H3."
       ],
-      score: 58,
-    });
-  }
-
-  const thinThreshold = getThinContentThreshold(pageType);
-  if (wordCount < thinThreshold && ["service", "pricing", "product", "category", "article", "general", "homepage", "case_study", "feature"].includes(pageType)) {
-    pushAction({
-      actionType: "expand_content",
-      summary: "The page content looks thin for its intent.",
-      priority: ["pricing", "service", "product", "homepage"].includes(pageType) ? "high" : "medium",
-      severity: "medium",
-      titleText: "Expand thin content",
-      whyItMatters: "Thin pages often struggle to rank and convert because they lack depth and clarity.",
-      technicalReason: `The page appears to contain only about ${wordCount} words, which is below the expected depth for this page type.`,
-      expectedImpactRange: "Medium",
-      steps: [
-        "Add deeper information related to the page topic.",
-        "Address user questions more directly.",
-        "Improve topical depth using stronger headings and sections."
-      ],
-      score: 76,
+      score: 56,
     });
   }
 
   if (!canonicalOk) {
     pushAction({
       actionType: "review_canonical",
-      summary: "Canonical setup may be missing or not aligned to this page.",
-      priority: ["pricing", "conversion", "service", "product", "category"].includes(pageType) ? "medium" : "low",
-      severity: "medium",
       titleText: "Review canonical tag",
-      whyItMatters: "Canonical tags help search engines consolidate duplicate and near-duplicate page signals.",
-      technicalReason: "The page canonical is missing or does not point cleanly to the crawled final URL.",
-      expectedImpactRange: "Low-Medium",
+      summary: "Canonical setup may be missing or not aligned to this page.",
+      whyItMatters: "Incorrect canonicals can split ranking signals or suppress the intended URL.",
+      technicalReason: "The page canonical is missing or does not match the crawled final URL.",
+      expectedImpactRange: isCommercial ? "Medium" : "Low-Medium",
       steps: [
         "Check whether the page should self-canonicalize.",
         "Fix the canonical if it points to the wrong URL.",
-        "Ensure duplicate variants consolidate to the preferred page."
+        "Consolidate duplicate variants to the preferred page."
       ],
-      score: 60,
+      score: isCommercial ? 64 : 48,
     });
   }
 
-  if (pageOpportunityScore >= 80 && ["pricing", "conversion", "service", "product", "homepage"].includes(pageType)) {
+  if (wordCount < thinThreshold && ["homepage", "service", "pricing", "product", "category", "article", "general", "feature", "case_study"].includes(pageType)) {
     pushAction({
-      actionType: "prioritize_high_value_page",
-      summary: "This is a high-opportunity page and should be prioritized in your SEO roadmap.",
-      priority: "critical",
-      severity: "high",
-      titleText: "Prioritize this page",
-      whyItMatters: "Improvements on high-value pages can drive outsized traffic, leads, or revenue impact.",
-      technicalReason: "The page combines strong business importance with meaningful optimization gaps.",
+      actionType: "expand_content",
+      titleText: "Expand thin content",
+      summary: "The page content looks thin for its intent.",
+      whyItMatters: "Thin pages often struggle to rank or convert because they do not fully satisfy user intent.",
+      technicalReason: `The page appears to contain about ${wordCount} words, which is below the expected depth for this page type.`,
+      expectedImpactRange: isCommercial ? "Medium-High" : "Medium",
+      steps: [
+        "Add deeper and more useful information related to the page topic.",
+        "Answer common user questions directly.",
+        "Use stronger sections and supporting headings to improve topical depth."
+      ],
+      score: isCommercial ? 78 : pageType === "article" ? 74 : 62,
+    });
+  }
+
+  if (pageType === "homepage" && pageOpportunityScore >= 55) {
+    pushAction({
+      actionType: "strengthen_homepage_seo_hub",
+      titleText: "Strengthen homepage as SEO hub",
+      summary: "The homepage should do a stronger job routing relevance and authority across the site.",
+      whyItMatters: "The homepage is usually the strongest authority hub and a major entry point for branded demand.",
+      technicalReason: "The page has strategic importance but still shows notable structural or visibility gaps.",
       expectedImpactRange: "High",
       steps: [
-        "Address all technical and content issues on this page first.",
-        "Improve internal linking to this page.",
-        "Use this page as an early SEO win candidate."
+        "Clarify the primary positioning of the business in the headline and title.",
+        "Improve links from the homepage to key revenue or strategic pages.",
+        "Strengthen the homepage copy so it communicates intent more clearly."
       ],
-      score: 92,
+      score: 80,
     });
   }
 
-  return actions
-    .sort((a, b) => b._sortScore - a._sortScore)
-    .map(({ _sortScore, ...rest }) => rest);
+  if (["pricing", "service", "product", "conversion"].includes(pageType) && pageOpportunityScore >= 60) {
+    pushAction({
+      actionType: "prioritize_commercial_page",
+      titleText: "Prioritize this commercial page",
+      summary: "This is a commercially important page with meaningful SEO upside.",
+      whyItMatters: "Improvements on high-intent pages can create outsized business value.",
+      technicalReason: "The page combines strong revenue intent with optimization gaps.",
+      expectedImpactRange: "High",
+      steps: [
+        "Prioritize technical and on-page improvements here first.",
+        "Improve internal linking into this page from stronger parts of the site.",
+        "Make the offer, differentiation, and intent clearer."
+      ],
+      score: pageOpportunityScore >= 80 ? 94 : 82,
+    });
+  }
+
+  if (pageType === "article" && wordCount < thinThreshold) {
+    pushAction({
+      actionType: "improve_article_depth",
+      titleText: "Improve article depth and completeness",
+      summary: "This article likely needs more depth to compete for informational queries.",
+      whyItMatters: "Informational pages often need stronger coverage to rank for broader and more competitive topics.",
+      technicalReason: `The article appears thin relative to the expected threshold for informational content.`,
+      expectedImpactRange: "Medium",
+      steps: [
+        "Expand the article to cover subtopics, definitions, FAQs, or examples.",
+        "Add stronger section structure and semantic breadth.",
+        "Make sure the article fully satisfies the likely search intent."
+      ],
+      score: 72,
+    });
+  }
+
+  if (pageType === "article" && internalLinkDepth >= 2) {
+    pushAction({
+      actionType: "improve_internal_linking_to_article",
+      titleText: "Improve internal linking to this article",
+      summary: "This article sits relatively deep in the site structure.",
+      whyItMatters: "Important content can struggle when it is too far from stronger pages or hubs.",
+      technicalReason: `The page was discovered at internal depth ${internalLinkDepth}.`,
+      expectedImpactRange: "Low-Medium",
+      steps: [
+        "Link to this article from relevant archive, category, or hub pages.",
+        "Add contextual internal links from related articles.",
+        "Promote important evergreen content from stronger site sections."
+      ],
+      score: 58,
+    });
+  }
+
+  if (pageType === "archive") {
+    pushAction({
+      actionType: "strengthen_archive_hub_role",
+      titleText: "Strengthen archive page as a content hub",
+      summary: "This archive page should better distribute authority to high-value detail pages.",
+      whyItMatters: "Archive pages are more useful when they help users and search engines reach the strongest articles efficiently.",
+      technicalReason: "The page type is archive-like, which usually performs best as a structured hub rather than a weak listing.",
+      expectedImpactRange: "Low-Medium",
+      steps: [
+        "Improve descriptive intro copy on the archive page.",
+        "Highlight top or evergreen detail pages more clearly.",
+        "Make sure the archive supports crawl flow into important articles."
+      ],
+      score: 54,
+    });
+  }
+
+  if (pageType === "category") {
+    pushAction({
+      actionType: "clarify_category_intent",
+      titleText: "Clarify category page intent",
+      summary: "This category page should better explain what users can find here.",
+      whyItMatters: "Category pages often perform better when they combine clear topic framing with strong onward links.",
+      technicalReason: "The page type suggests a category or browse page, which may need stronger explanatory copy.",
+      expectedImpactRange: "Low-Medium",
+      steps: [
+        "Add a short descriptive intro that explains the category.",
+        "Improve internal links to the best detail pages in the category.",
+        "Avoid making the page a thin list with little context."
+      ],
+      score: 52,
+    });
+  }
+
+  if (visibilityScore < 55 && structuralScore >= 70 && internalLinkDepth >= 2) {
+    pushAction({
+      actionType: "improve_internal_prominence",
+      titleText: "Improve internal prominence",
+      summary: "This page looks reasonably well built, but may be too weakly connected internally.",
+      whyItMatters: "Pages can remain underexposed when they are structurally decent but buried in the site.",
+      technicalReason: "Structural quality is acceptable, but visibility readiness is still held back and the page sits relatively deep.",
+      expectedImpactRange: "Medium",
+      steps: [
+        "Increase internal links from stronger site sections.",
+        "Link to this page from relevant parent or hub pages.",
+        "Make sure anchor text reflects the page topic clearly."
+      ],
+      score: 66,
+    });
+  }
+
+  if (loadMs && loadMs > 5000) {
+    pushAction({
+      actionType: "improve_page_speed",
+      titleText: "Improve page load speed",
+      summary: "This page loaded slowly during the crawl.",
+      whyItMatters: "Slow pages can harm user experience and may hold back search performance.",
+      technicalReason: `The crawler recorded a load time of about ${loadMs} ms.`,
+      expectedImpactRange: "Low-Medium",
+      steps: [
+        "Review large assets and unnecessary scripts on the page.",
+        "Improve caching, compression, and delivery where possible.",
+        "Check whether third-party scripts are causing delay."
+      ],
+      score: isCommercial ? 62 : 50,
+    });
+  }
+
+  if (pageOpportunityScore >= 80 && ["homepage", "pricing", "conversion", "service", "product"].includes(pageType)) {
+    pushAction({
+      actionType: "make_this_an_early_seo_win",
+      titleText: "Make this an early SEO win page",
+      summary: "This page should be moved near the top of the roadmap.",
+      whyItMatters: "High-value pages with clear fixable gaps are often the fastest way to create visible SEO momentum.",
+      technicalReason: "The page combines high business importance with meaningful SEO opportunity.",
+      expectedImpactRange: "High",
+      steps: [
+        "Resolve the highest-priority technical issues first.",
+        "Strengthen page relevance and messaging.",
+        "Support it with stronger internal links from strategic pages."
+      ],
+      score: 90,
+    });
+  }
+
+  return dedupeAndLimitActions(actions, pageType, pageOpportunityScore);
 }
 
 async function rescueStaleJobs() {
   try {
-    await supabase.rpc("scc_rescue_stale_jobs", {
-      p_minutes: RESCUE_STALE_AFTER_MIN,
-    });
+    await supabase.rpc("scc_rescue_stale_jobs", { p_minutes: RESCUE_STALE_AFTER_MIN });
   } catch (err) {
     console.error("[rescue stale jobs]", err.message);
   }
 }
 
 async function claimNextJob() {
-  const { data, error } = await supabase.rpc("scc_claim_next_job", {
-    p_worker_id: WORKER_ID,
-  });
-
+  const { data, error } = await supabase.rpc("scc_claim_next_job", { p_worker_id: WORKER_ID });
   if (error) throw error;
   if (!data) return null;
-
   if (Array.isArray(data)) return data[0] || null;
   if (typeof data === "object" && data.job) return data.job;
   return data;
@@ -1455,9 +1526,7 @@ async function updateJobProgress(jobId, pagesDone, errorsCount) {
     })
     .eq("id", jobId);
 
-  if (error) {
-    console.error(`[progress update] job=${jobId}`, error.message);
-  }
+  if (error) console.error(`[progress update] job=${jobId}`, error.message);
 }
 
 async function getOrCreatePage({ siteId, url, pageType }) {
@@ -1501,11 +1570,7 @@ async function getOrCreatePage({ siteId, url, pageType }) {
   return inserted.id;
 }
 
-async function upsertPageSnapshotCrawl({
-  snapshotId,
-  pageId,
-  crawlRow,
-}) {
+async function upsertPageSnapshotCrawl({ snapshotId, pageId, crawlRow }) {
   const { error } = await supabase
     .from("scc_page_snapshot_crawl")
     .upsert(
@@ -1520,11 +1585,7 @@ async function upsertPageSnapshotCrawl({
   if (error) throw error;
 }
 
-async function upsertPageSnapshotMetrics({
-  snapshotId,
-  pageId,
-  metricsRow,
-}) {
+async function upsertPageSnapshotMetrics({ snapshotId, pageId, metricsRow }) {
   const { error } = await supabase
     .from("scc_page_snapshot_metrics")
     .upsert(
@@ -1539,11 +1600,7 @@ async function upsertPageSnapshotMetrics({
   if (error) throw error;
 }
 
-async function replaceActions({
-  snapshotId,
-  pageId,
-  actions,
-}) {
+async function replaceActions({ snapshotId, pageId, actions }) {
   const { error: deleteError } = await supabase
     .from("scc_actions")
     .delete()
@@ -1551,7 +1608,6 @@ async function replaceActions({
     .eq("page_id", pageId);
 
   if (deleteError) throw deleteError;
-
   if (!actions.length) return;
 
   const rows = actions.map((action) => ({
@@ -1570,10 +1626,7 @@ async function replaceActions({
     severity: action.severity,
   }));
 
-  const { error: insertError } = await supabase
-    .from("scc_actions")
-    .insert(rows);
-
+  const { error: insertError } = await supabase.from("scc_actions").insert(rows);
   if (insertError) throw insertError;
 }
 
@@ -1593,11 +1646,7 @@ async function processSinglePage({
     fetchError = err.message || "Unknown fetch error";
 
     const pageType = classifyPageTypeFromSignals({ url });
-    const pageId = await getOrCreatePage({
-      siteId,
-      url,
-      pageType,
-    });
+    const pageId = await getOrCreatePage({ siteId, url, pageType });
 
     await upsertPageSnapshotCrawl({
       snapshotId,
@@ -1624,6 +1673,15 @@ async function processSinglePage({
       },
     });
 
+    const structuralScore = 0;
+    const visibilityScore = 0;
+    const revenueScore = Math.round(getPageIntentWeight(pageType) * 100);
+    const paidRiskScore = Math.round(getPageIntentWeight(pageType) * 40);
+    const pageOpportunityScore =
+      ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? 52 : 35;
+    const priorityBucket =
+      ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? "Tier 3" : "Tier 4";
+
     await upsertPageSnapshotMetrics({
       snapshotId,
       pageId,
@@ -1646,12 +1704,12 @@ async function processSinglePage({
         paid_clicks: 0,
         paid_conversions: 0,
         paid_revenue: 0,
-        structural_score: 0,
-        visibility_score: 0,
-        revenue_score: Math.round(getPageIntentWeight(pageType) * 100),
-        paid_risk_score: Math.round(getPageIntentWeight(pageType) * 40),
-        page_opportunity_score: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? 52 : 35,
-        priority_bucket: ["pricing", "conversion", "service", "product", "homepage"].includes(pageType) ? "Tier 3" : "Tier 4",
+        structural_score: structuralScore,
+        visibility_score: visibilityScore,
+        revenue_score: revenueScore,
+        paid_risk_score: paidRiskScore,
+        page_opportunity_score: pageOpportunityScore,
+        priority_bucket: priorityBucket,
       },
     });
 
@@ -1667,14 +1725,15 @@ async function processSinglePage({
       title: "",
       metaDescription: "",
       h1Count: 0,
-      pageOpportunityScore: 35,
+      pageOpportunityScore,
+      structuralScore,
+      visibilityScore,
+      revenueScore,
+      internalLinkDepth: depth,
+      loadMs: null,
     });
 
-    await replaceActions({
-      snapshotId,
-      pageId,
-      actions,
-    });
+    await replaceActions({ snapshotId, pageId, actions });
 
     return {
       stored: true,
@@ -1691,11 +1750,7 @@ async function processSinglePage({
 
   if (!fetched.contentType.includes("text/html")) {
     const pageType = classifyPageTypeFromSignals({ url: effectiveUrl });
-    const pageId = await getOrCreatePage({
-      siteId,
-      url: effectiveUrl,
-      pageType,
-    });
+    const pageId = await getOrCreatePage({ siteId, url: effectiveUrl, pageType });
 
     await upsertPageSnapshotCrawl({
       snapshotId,
@@ -1722,6 +1777,12 @@ async function processSinglePage({
       },
     });
 
+    const structuralScore = 0;
+    const visibilityScore = 0;
+    const revenueScore = Math.round(getPageIntentWeight(pageType) * 100);
+    const paidRiskScore = 0;
+    const pageOpportunityScore = 10;
+
     await upsertPageSnapshotMetrics({
       snapshotId,
       pageId,
@@ -1744,20 +1805,16 @@ async function processSinglePage({
         paid_clicks: 0,
         paid_conversions: 0,
         paid_revenue: 0,
-        structural_score: 0,
-        visibility_score: 0,
-        revenue_score: Math.round(getPageIntentWeight(pageType) * 100),
-        paid_risk_score: 0,
-        page_opportunity_score: 10,
+        structural_score: structuralScore,
+        visibility_score: visibilityScore,
+        revenue_score: revenueScore,
+        paid_risk_score: paidRiskScore,
+        page_opportunity_score: pageOpportunityScore,
         priority_bucket: "Tier 4",
       },
     });
 
-    await replaceActions({
-      snapshotId,
-      pageId,
-      actions: [],
-    });
+    await replaceActions({ snapshotId, pageId, actions: [] });
 
     return {
       stored: true,
@@ -1781,12 +1838,7 @@ async function processSinglePage({
 
   const pageType = extracted.pageType;
   const links = extracted.internalLinks;
-
-  const pageId = await getOrCreatePage({
-    siteId,
-    url: effectiveUrl,
-    pageType,
-  });
+  const pageId = await getOrCreatePage({ siteId, url: effectiveUrl, pageType });
 
   const canonicalOk = evaluateCanonicalOk(effectiveUrl, extracted.canonicalUrl);
   const hasTitle = Boolean(extracted.title);
@@ -1916,13 +1968,14 @@ async function processSinglePage({
     metaDescription: extracted.metaDescription,
     h1Count: extracted.h1Count,
     pageOpportunityScore,
+    structuralScore,
+    visibilityScore,
+    revenueScore,
+    internalLinkDepth: depth,
+    loadMs: extracted.loadMs,
   });
 
-  await replaceActions({
-    snapshotId,
-    pageId,
-    actions,
-  });
+  await replaceActions({ snapshotId, pageId, actions });
 
   return {
     stored: true,
@@ -1946,9 +1999,7 @@ async function markSnapshotRunning(snapshotId) {
     })
     .eq("id", snapshotId);
 
-  if (error) {
-    console.error(`[snapshot running update] snapshot=${snapshotId}`, error.message);
-  }
+  if (error) console.error(`[snapshot running update] snapshot=${snapshotId}`, error.message);
 }
 
 async function markSnapshotFinished(snapshotId) {
@@ -1963,9 +2014,7 @@ async function markSnapshotFinished(snapshotId) {
     })
     .eq("id", snapshotId);
 
-  if (error) {
-    console.error(`[snapshot completed update] snapshot=${snapshotId}`, error.message);
-  }
+  if (error) console.error(`[snapshot completed update] snapshot=${snapshotId}`, error.message);
 }
 
 async function markSnapshotFailed(snapshotId, stage, message) {
@@ -1979,9 +2028,7 @@ async function markSnapshotFailed(snapshotId, stage, message) {
     })
     .eq("id", snapshotId);
 
-  if (error) {
-    console.error(`[snapshot failed update] snapshot=${snapshotId}`, error.message);
-  }
+  if (error) console.error(`[snapshot failed update] snapshot=${snapshotId}`, error.message);
 }
 
 async function runCrawlJob(job) {
@@ -1995,9 +2042,7 @@ async function runCrawlJob(job) {
   const respectRobots = Boolean(job.respect_robots);
   const renderJs = Boolean(job.render_js);
 
-  if (!seedUrl) {
-    throw new Error("Invalid seed_url on crawl job");
-  }
+  if (!seedUrl) throw new Error("Invalid seed_url on crawl job");
 
   console.log(
     `[job start] id=${jobId} seed=${seedUrl} maxPages=${maxPages} maxDepth=${maxDepth} crawlDelayMs=${crawlDelayMs} respectRobots=${respectRobots} renderJs=${renderJs}`
@@ -2033,7 +2078,11 @@ async function runCrawlJob(job) {
     pagesDone += 1;
     if (homepageResult.fetchError) errorsCount += 1;
 
-    registerSelectedPage(queueState, homepageResult.pageType, getUrlFamily(homepageResult.url, homepageResult.pageType));
+    registerSelectedPage(
+      queueState,
+      homepageResult.pageType,
+      getUrlFamily(homepageResult.url, homepageResult.pageType)
+    );
 
     await updateJobProgress(jobId, pagesDone, errorsCount);
 
@@ -2110,9 +2159,7 @@ async function runCrawlJob(job) {
       if (seen.has(next.url)) continue;
       if (next.depth > maxDepth) continue;
 
-      if (crawlDelayMs > 0) {
-        await sleep(crawlDelayMs);
-      }
+      if (crawlDelayMs > 0) await sleep(crawlDelayMs);
 
       try {
         const pageResult = await processSinglePage({
@@ -2200,13 +2247,11 @@ async function main() {
   while (true) {
     try {
       await rescueStaleJobs();
-
       const job = await claimNextJob();
       if (!job) {
         await sleep(POLL_MS);
         continue;
       }
-
       await runCrawlJob(job);
     } catch (err) {
       console.error("[worker loop error]", err);
