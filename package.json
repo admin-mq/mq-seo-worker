@@ -6,7 +6,8 @@
     "start": "node src/worker.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.0",
-    "axios": "^1.6.8"
-  }
+  "@supabase/supabase-js": "^2.x.x",
+  "axios": "^1.x.x",
+  "cheerio": "^1.0.0"
+}
 }
