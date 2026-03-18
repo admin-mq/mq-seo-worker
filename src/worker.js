@@ -2161,6 +2161,16 @@ async function runCrawlJob(job) {
   }
 }
 
+async function rescueStaleJobs() {
+  try {
+    await supabase.rpc("scc_rescue_stale_jobs", {
+      p_minutes: RESCUE_STALE_AFTER_MIN,
+    });
+  } catch (err) {
+    console.error("[rescue stale jobs]", err.message);
+  }
+}
+
 async function main() {
   console.log(`[worker boot] ${WORKER_ID}`);
 
