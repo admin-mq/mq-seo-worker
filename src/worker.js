@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 const RESCUE_STALE_AFTER_MIN = Number(process.env.RESCUE_STALE_AFTER_MIN || 10);
 const USER_AGENT =
   process.env.USER_AGENT ||
-  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.2; +https://marketersquest.com)";
+  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.3; +https://marketersquest.com)";
 const MAX_REDIRECTS = Number(process.env.MAX_REDIRECTS || 5);
 
 const NON_HTML_EXTENSIONS = [
@@ -171,7 +171,7 @@ function isArticleLikeUrl(urlString) {
   if (/\/news\//.test(path) && segs.length >= 2) return true;
   if (/\/guides\//.test(path) && segs.length >= 2) return true;
   if (/\/resources\//.test(path) && segs.length >= 2) return true;
-  if (segs.length >= 1 && segs[segs.length - 1].split("-").length >= 3 && segs.length >= 1) {
+  if (segs.length >= 1 && segs[segs.length - 1].split("-").length >= 3) {
     const weakArchiveTerms = new Set([
       "category",
       "categories",
@@ -298,74 +298,57 @@ function classifyPageTypeFromSignals({
 
   addScore(scores, "general", 10);
 
-  // Hard page patterns first
   if (/privacy|cookie|terms|policy|legal|refund|return-policy|shipping-policy|disclaimer/.test(path)) {
     addScore(scores, "policy", 120);
   }
-
   if (/contact|support|help|customer-service/.test(path)) {
     addScore(scores, "contact", 90);
   }
-
   if (/about|company|our-story|who-we-are|team|leadership/.test(path)) {
     addScore(scores, "about", 80);
   }
-
   if (/pricing|plans/.test(path)) {
     addScore(scores, "pricing", 95);
   }
-
   if (/demo|book-demo|get-started|start-now|free-trial|trial|contact-sales/.test(path)) {
     addScore(scores, "conversion", 95);
   }
-
   if (/location|locations|city|area|near-me/.test(path)) {
     addScore(scores, "location", 75);
   }
-
   if (/case-study|case-studies|success-story|success-stories/.test(path)) {
     addScore(scores, "case_study", 90);
   }
-
   if (/testimonial|testimonials|review|reviews/.test(path)) {
     addScore(scores, "proof", 80);
   }
-
   if (/feature|features|capabilities|platform|technology/.test(path)) {
     addScore(scores, "feature", 70);
   }
-
   if (/service|services|solution|solutions/.test(path)) {
     addScore(scores, "service", 72);
   }
-
   if (/product|products|sku|item|\/p\/|\/pdp\/|\/product\//.test(path)) {
     addScore(scores, "product", 85);
   }
-
   if (/category|categories/.test(path)) {
     addScore(scores, "category", 90);
   }
-
   if (/collection|collections|shop|store|catalog|browse/.test(path)) {
     addScore(scores, "category", 68);
   }
-
   if (isArchiveLikeUrl(normalizedUrl)) {
     addScore(scores, "archive", 100);
   }
-
   if (isArticleLikeUrl(normalizedUrl)) {
     addScore(scores, "article", 88);
   }
 
-  // Date-like structure strongly hints article/content
   if (segs.length >= 2 && segs.some(isLikelyDateSegment)) {
     addScore(scores, "article", 25);
     addScore(scores, "archive", -8);
   }
 
-  // Schema hints
   if (schema.some((s) => ["article", "blogposting", "newsarticle", "medicalwebpage", "howto"].includes(s))) {
     addScore(scores, "article", 30);
   }
@@ -377,66 +360,52 @@ function classifyPageTypeFromSignals({
     addScore(scores, "feature", 10);
   }
 
-  // Content/title hints
   if (/price|pricing|plans|cost/.test(combined)) {
     addScore(scores, "pricing", 26);
   }
-
   if (/book demo|request demo|get started|free trial|start free|contact sales|enquire now/.test(combined)) {
     addScore(scores, "conversion", 28);
   }
-
   if (/service|services|solution|solutions/.test(combined)) {
     addScore(scores, "service", 18);
   }
-
   if (/case study|success story/.test(combined)) {
     addScore(scores, "case_study", 24);
   }
-
   if (/testimonial|review|client story/.test(combined)) {
     addScore(scores, "proof", 18);
   }
-
   if (/about us|our company|our team/.test(combined)) {
     addScore(scores, "about", 22);
   }
-
   if (/contact us|support/.test(combined)) {
     addScore(scores, "contact", 22);
   }
-
   if (/category|categories|browse|archive|archives/.test(combined)) {
     addScore(scores, "archive", 22);
     addScore(scores, "category", 16);
   }
-
   if (/blog|blogs|news|article|articles|post|posts|insights|guides|resources/.test(combined)) {
     addScore(scores, "article", 14);
     addScore(scores, "archive", 14);
   }
 
-  // Body/content hints
   if (/posted on|published on|written by|author|leave a comment|read more/.test(body)) {
     addScore(scores, "article", 18);
   }
-
   if (/category archives|tag archives|author archives/.test(body)) {
     addScore(scores, "archive", 25);
   }
 
-  // URL shape hints
   if (pathDepth(normalizedUrl) >= 2 && slug.split("-").length >= 3) {
     addScore(scores, "article", 10);
   }
-
   if (pathDepth(normalizedUrl) === 1 && slug.split("-").length <= 2) {
     addScore(scores, "service", 4);
     addScore(scores, "pricing", 4);
     addScore(scores, "feature", 3);
   }
 
-  // Anti-false-positive logic for content pages
   const articleBias =
     isArticleLikeUrl(normalizedUrl) ||
     schema.some((s) => ["article", "blogposting", "newsarticle", "howto"].includes(s)) ||
@@ -458,7 +427,6 @@ function classifyPageTypeFromSignals({
     addScore(scores, "service", -12);
   }
 
-  // Commercial intent should be explicit, not accidental
   const strongCommercialIntent =
     /pricing|plans|book demo|get started|free trial|request demo|contact sales/.test(combined) ||
     /pricing|plans|demo|trial/.test(path);
@@ -468,7 +436,6 @@ function classifyPageTypeFromSignals({
     addScore(scores, "conversion", -8);
   }
 
-  // Policy/contact/about should override noisy content
   const hardTypes = [
     { type: "policy", min: 100 },
     { type: "contact", min: 90 },
@@ -483,7 +450,6 @@ function classifyPageTypeFromSignals({
 
   const winner = bestScoredType(scores, "general");
 
-  // If article and archive are close, use URL shape to break tie
   if (
     Math.abs((scores.article || 0) - (scores.archive || 0)) <= 8 &&
     Math.max(scores.article || 0, scores.archive || 0) > 40
@@ -492,7 +458,6 @@ function classifyPageTypeFromSignals({
     if (isArchiveLikeUrl(normalizedUrl)) return "archive";
   }
 
-  // Safety rails against false pricing/service on content URLs
   if (winner.type === "pricing" || winner.type === "conversion" || winner.type === "service") {
     if (articleBias) return "article";
     if (archiveBias) return "archive";
@@ -605,6 +570,161 @@ function extractInternalLinks($, pageUrl, seedUrl) {
   return results;
 }
 
+function getUrlFamily(urlString, pageType = "general") {
+  const segs = getPathSegments(urlString);
+  if (segs.length === 0) return "root";
+
+  const first = segs[0];
+
+  if (pageType === "archive") {
+    if (["category", "tag", "author", "page"].includes(first)) {
+      return segs.slice(0, 2).join("/") || first;
+    }
+    return first;
+  }
+
+  if (pageType === "article") {
+    if (["blog", "news", "guides", "resources", "articles", "posts"].includes(first)) {
+      return first;
+    }
+    return first;
+  }
+
+  return first;
+}
+
+function createQueueState() {
+  return {
+    enqueuedTypeCounts: {},
+    selectedTypeCounts: {},
+    enqueuedFamilyCounts: {},
+    selectedFamilyCounts: {},
+  };
+}
+
+function incrementCount(map, key) {
+  map[key] = (map[key] || 0) + 1;
+}
+
+function getCount(map, key) {
+  return map[key] || 0;
+}
+
+function registerEnqueuedCandidate(queueState, pageType, familyKey) {
+  incrementCount(queueState.enqueuedTypeCounts, pageType);
+  incrementCount(queueState.enqueuedFamilyCounts, familyKey);
+}
+
+function registerSelectedPage(queueState, pageType, familyKey) {
+  incrementCount(queueState.selectedTypeCounts, pageType);
+  incrementCount(queueState.selectedFamilyCounts, familyKey);
+}
+
+function getContentMixTargets(maxPages) {
+  const usable = Math.max(0, maxPages - 1); // homepage already consumed usually
+  return {
+    minArticles: Math.max(2, Math.min(4, Math.floor(usable * 0.45))),
+    maxArchives: Math.max(1, Math.min(2, Math.ceil(usable * 0.25))),
+    maxCategories: Math.max(1, Math.min(2, Math.ceil(usable * 0.25))),
+    maxSameFamily: 2,
+  };
+}
+
+function applyQueueV3MixAdjustments({
+  score,
+  pageType,
+  familyKey,
+  parentPageType,
+  anchorText,
+  siteType,
+  queueState,
+  maxPages,
+}) {
+  let adjusted = score;
+
+  const selectedTypeCounts = queueState.selectedTypeCounts;
+  const enqueuedTypeCounts = queueState.enqueuedTypeCounts;
+  const selectedFamilyCounts = queueState.selectedFamilyCounts;
+  const familySelected = getCount(selectedFamilyCounts, familyKey);
+  const familyEnqueued = getCount(queueState.enqueuedFamilyCounts, familyKey);
+
+  if (siteType === "content") {
+    const targets = getContentMixTargets(maxPages);
+    const selectedArticles = getCount(selectedTypeCounts, "article");
+    const selectedArchives = getCount(selectedTypeCounts, "archive");
+    const selectedCategories = getCount(selectedTypeCounts, "category");
+
+    if (pageType === "article") {
+      adjusted += 18;
+
+      if (selectedArticles < targets.minArticles) {
+        adjusted += 24;
+      }
+
+      if (parentPageType === "archive" || parentPageType === "category") {
+        adjusted += 18;
+      }
+
+      if (/read more|continue reading|article|post|story|guide/.test((anchorText || "").toLowerCase())) {
+        adjusted += 10;
+      }
+    }
+
+    if (pageType === "archive") {
+      adjusted -= 10;
+
+      if (selectedArchives >= targets.maxArchives) {
+        adjusted -= 34;
+      }
+
+      if (familySelected >= 1) {
+        adjusted -= 12;
+      }
+
+      if (familyEnqueued >= 2) {
+        adjusted -= 8;
+      }
+    }
+
+    if (pageType === "category") {
+      adjusted -= 4;
+
+      if (selectedCategories >= targets.maxCategories) {
+        adjusted -= 24;
+      }
+
+      if (familySelected >= 1) {
+        adjusted -= 10;
+      }
+    }
+
+    if (familySelected >= targets.maxSameFamily) {
+      adjusted -= 20;
+    }
+
+    if (pageType === "general" && parentPageType === "archive") {
+      adjusted -= 8;
+    }
+
+    if (
+      selectedArticles < targets.minArticles &&
+      (pageType === "archive" || pageType === "category")
+    ) {
+      adjusted -= 12;
+    }
+  }
+
+  if (siteType === "service") {
+    if (pageType === "article" || pageType === "archive") adjusted -= 8;
+  }
+
+  if (siteType === "ecommerce") {
+    if (pageType === "article" || pageType === "archive") adjusted -= 10;
+  }
+
+  return adjusted;
+}
+
 function buildPriorityScore({
   candidateUrl,
   anchorText,
@@ -613,6 +733,8 @@ function buildPriorityScore({
   siteType,
   homepageNavSet,
   siblingTypeCounts,
+  queueState,
+  maxPages,
 }) {
   const pageType = classifyPageTypeFromSignals({
     url: candidateUrl,
@@ -657,7 +779,7 @@ function buildPriorityScore({
     if (pageType === "category") score -= 10;
   } else if (siteType === "content") {
     if (pageType === "article") score += 16;
-    if (pageType === "archive") score += 6;
+    if (pageType === "archive") score += 4;
     if (pageType === "case_study") score += 4;
     if (pageType === "category") score -= 6;
     if (pageType === "product") score -= 8;
@@ -672,12 +794,15 @@ function buildPriorityScore({
   if (parentPageType === "homepage" && pageType === "service") score += 8;
   if (parentPageType === "homepage" && pageType === "pricing") score += 8;
   if (parentPageType === "archive" && pageType === "article") score += 16;
+  if (parentPageType === "category" && pageType === "article") score += 12;
   if (parentPageType === "article" && pageType === "article") score -= 6;
 
   const anchor = (anchorText || "").toLowerCase();
   if (/pricing|plans|book demo|demo|trial|get started|contact sales/.test(anchor)) score += 10;
   if (/services|solutions|products|shop|store|collections/.test(anchor)) score += 6;
-  if (/read more|continue reading|learn more|article|post/.test(anchor) && pageType === "article") score += 8;
+  if (/read more|continue reading|learn more|article|post|story|guide/.test(anchor) && pageType === "article") {
+    score += 8;
+  }
   if (/privacy|terms|cookie|refund|shipping/.test(anchor)) score -= 18;
 
   score += scoreSlugHint(candidateUrl);
@@ -688,7 +813,6 @@ function buildPriorityScore({
   else if (segs.length >= 4) score -= 6;
 
   const currentCount = siblingTypeCounts[pageType] || 0;
-
   if (pageType === "category" && currentCount >= 2) score -= 18;
   if (pageType === "archive" && currentCount >= 2) score -= 20;
   if (pageType === "article" && currentCount >= 4) score -= 8;
@@ -696,12 +820,26 @@ function buildPriorityScore({
   if (pageType === "contact" && currentCount >= 1) score -= 12;
   if (pageType === "product" && currentCount >= 3) score -= 10;
 
+  const familyKey = getUrlFamily(candidateUrl, pageType);
+
+  score = applyQueueV3MixAdjustments({
+    score,
+    pageType,
+    familyKey,
+    parentPageType,
+    anchorText,
+    siteType,
+    queueState,
+    maxPages,
+  });
+
   if (pageType === "policy") score = Math.min(score, 18);
   if (pageType === "contact") score = Math.min(score, 38);
 
   return {
     score,
     pageType,
+    familyKey,
   };
 }
 
@@ -730,7 +868,7 @@ async function fetchHtml(url) {
   };
 }
 
-function extractSeoData(html, url, status, contentType, loadMs, depth) {
+function extractSeoData(html, url, status, contentType, loadMs, depth, seedUrl) {
   const $ = cheerio.load(html || "");
 
   const title = cleanText($("title").first().text() || "");
@@ -771,7 +909,7 @@ function extractSeoData(html, url, status, contentType, loadMs, depth) {
     schemaTypes,
   });
 
-  const internalLinks = extractInternalLinks($, url, url);
+  const internalLinks = extractInternalLinks($, url, seedUrl);
 
   return {
     $,
@@ -1528,11 +1666,12 @@ async function processSinglePage({
     fetched.status,
     fetched.contentType,
     fetched.loadMs,
-    depth
+    depth,
+    seedUrl
   );
 
   const pageType = extracted.pageType;
-  const links = extractInternalLinks(extracted.$, effectiveUrl, seedUrl);
+  const links = extracted.internalLinks;
 
   const pageId = await getOrCreatePage({
     siteId,
@@ -1750,6 +1889,7 @@ async function runCrawlJob(job) {
   const homepageNavSet = new Set();
   const siblingTypeCounts = {};
   const queue = [];
+  const queueState = createQueueState();
 
   const heartbeatTimer = setInterval(() => {
     heartbeat(jobId);
@@ -1770,6 +1910,9 @@ async function runCrawlJob(job) {
     seen.add(homepageResult.url);
     pagesDone += 1;
     if (homepageResult.fetchError) errorsCount += 1;
+
+    registerSelectedPage(queueState, homepageResult.pageType, getUrlFamily(homepageResult.url, homepageResult.pageType));
+
     await updateJobProgress(jobId, pagesDone, errorsCount);
 
     if (pagesDone >= maxPages) {
@@ -1815,6 +1958,8 @@ async function runCrawlJob(job) {
         siteType,
         homepageNavSet,
         siblingTypeCounts,
+        queueState,
+        maxPages,
       });
 
       if (priority.score < 8) continue;
@@ -1824,6 +1969,7 @@ async function runCrawlJob(job) {
         depth: 1,
         score: priority.score,
         pageType: priority.pageType,
+        familyKey: priority.familyKey,
         anchorText: link.anchorText || "",
         parentPageType: "homepage",
       });
@@ -1831,6 +1977,7 @@ async function runCrawlJob(job) {
       queued.add(link.url);
       siblingTypeCounts[priority.pageType] =
         (siblingTypeCounts[priority.pageType] || 0) + 1;
+      registerEnqueuedCandidate(queueState, priority.pageType, priority.familyKey);
     }
 
     while (queue.length > 0 && pagesDone < maxPages) {
@@ -1857,6 +2004,13 @@ async function runCrawlJob(job) {
         seen.add(pageResult.url);
         pagesDone += 1;
         if (pageResult.fetchError) errorsCount += 1;
+
+        registerSelectedPage(
+          queueState,
+          pageResult.pageType,
+          getUrlFamily(pageResult.url, pageResult.pageType)
+        );
+
         await updateJobProgress(jobId, pagesDone, errorsCount);
 
         if (pagesDone >= maxPages) break;
@@ -1877,6 +2031,8 @@ async function runCrawlJob(job) {
             siteType,
             homepageNavSet,
             siblingTypeCounts,
+            queueState,
+            maxPages,
           });
 
           if (priority.score < 8) continue;
@@ -1886,6 +2042,7 @@ async function runCrawlJob(job) {
             depth: nextDepth,
             score: priority.score,
             pageType: priority.pageType,
+            familyKey: priority.familyKey,
             anchorText: link.anchorText || "",
             parentPageType: pageResult.pageType,
           });
@@ -1893,6 +2050,7 @@ async function runCrawlJob(job) {
           queued.add(link.url);
           siblingTypeCounts[priority.pageType] =
             (siblingTypeCounts[priority.pageType] || 0) + 1;
+          registerEnqueuedCandidate(queueState, priority.pageType, priority.familyKey);
         }
       } catch (err) {
         errorsCount += 1;
