@@ -2,12 +2,15 @@
   "name": "mq-seo-worker",
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/worker.js"
   },
   "dependencies": {
-  "@supabase/supabase-js": "^2.x.x",
-  "axios": "^1.x.x",
-  "cheerio": "^1.0.0"
-}
+    "@supabase/supabase-js": "^2.0.0",
+    "axios": "^1.0.0",
+    "cheerio": "^1.0.0"
+  }
 }
