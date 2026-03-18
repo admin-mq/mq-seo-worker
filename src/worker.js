@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 const RESCUE_STALE_AFTER_MIN = Number(process.env.RESCUE_STALE_AFTER_MIN || 10);
 const USER_AGENT =
   process.env.USER_AGENT ||
-  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.1; +https://marketersquest.com)";
+  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.2; +https://marketersquest.com)";
 const MAX_REDIRECTS = Number(process.env.MAX_REDIRECTS || 5);
 
 const NON_HTML_EXTENSIONS = [
@@ -126,42 +126,12 @@ function getPathSegments(urlString) {
   return url.pathname.split("/").filter(Boolean).map((s) => s.toLowerCase());
 }
 
-function classifyPageType(urlString, anchorText = "", title = "") {
-  const path = (safeUrl(urlString)?.pathname || "").toLowerCase();
-  const text = `${path} ${anchorText} ${title}`.toLowerCase();
+function pathDepth(urlString) {
+  return getPathSegments(urlString).length;
+}
 
-  if (path === "/" || path === "") return "homepage";
-
-  if (
-    /privacy|cookie|terms|policy|legal|refund|return-policy|shipping-policy|disclaimer/.test(text)
-  ) {
-    return "policy";
-  }
-
-  if (/contact|support|help|customer-service/.test(text)) return "contact";
-  if (/about|company|our-story|who-we-are|team|leadership/.test(text)) return "about";
-  if (/pricing|plans|plan/.test(text)) return "pricing";
-  if (/feature|features|capabilities/.test(text)) return "feature";
-  if (/demo|book-demo|get-started|start-now|free-trial|trial/.test(text)) return "conversion";
-  if (/location|locations|city|area|near-me/.test(text)) return "location";
-  if (/case-study|case-studies|success-story|success-stories/.test(text)) return "case_study";
-  if (/testimonial|testimonials|reviews/.test(text)) return "proof";
-
-  if (/product|products|sku|item|buy-|\/p\/|\/pdp\/|\/product\//.test(text)) {
-    return "product";
-  }
-
-  if (/category|categories|collection|collections|shop|store|catalog|browse/.test(text)) {
-    return "category";
-  }
-
-  if (/service|services|solution|solutions/.test(text)) return "service";
-
-  if (/blog|blogs|news|article|articles|post|posts|insights|learn|guides|resources/.test(text)) {
-    return "blog";
-  }
-
-  return "general";
+function isLikelyDateSegment(segment) {
+  return /^\d{4}$/.test(segment) || /^(0?[1-9]|1[0-2])$/.test(segment);
 }
 
 function scoreSlugHint(urlString) {
@@ -179,11 +149,356 @@ function scoreSlugHint(urlString) {
   if (/category|categories|collections|collection|shop|store/.test(path)) score += 16;
   if (/about|company|why-us/.test(path)) score += 8;
   if (/contact|book|demo|get-started|trial/.test(path)) score += 14;
-  if (/blog|news|article|articles|post|posts|insights/.test(path)) score -= 6;
+  if (/blog|news|article|articles|post|posts|insights/.test(path)) score -= 4;
   if (/privacy|cookie|terms|policy|legal|refund|shipping/.test(path)) score -= 28;
   if (/cart|checkout|account|login|signin|search/.test(path)) score -= 40;
 
   return score;
+}
+
+function isArticleLikeUrl(urlString) {
+  const url = safeUrl(urlString);
+  if (!url) return false;
+
+  const path = url.pathname.toLowerCase();
+  const segs = getPathSegments(urlString);
+
+  if (segs.length >= 2 && segs.some((s) => /^\d{4}$/.test(s))) return true;
+  if (/\/\d{4}\/\d{1,2}\//.test(path)) return true;
+  if (/\/blog\//.test(path) && segs.length >= 2) return true;
+  if (/\/article\//.test(path) || /\/articles\//.test(path)) return true;
+  if (/\/post\//.test(path) || /\/posts\//.test(path)) return true;
+  if (/\/news\//.test(path) && segs.length >= 2) return true;
+  if (/\/guides\//.test(path) && segs.length >= 2) return true;
+  if (/\/resources\//.test(path) && segs.length >= 2) return true;
+  if (segs.length >= 1 && segs[segs.length - 1].split("-").length >= 3 && segs.length >= 1) {
+    const weakArchiveTerms = new Set([
+      "category",
+      "categories",
+      "blog",
+      "blogs",
+      "news",
+      "tag",
+      "tags",
+      "author",
+      "page",
+      "topics",
+    ]);
+    if (!weakArchiveTerms.has(segs[0])) return true;
+  }
+
+  return false;
+}
+
+function isArchiveLikeUrl(urlString) {
+  const url = safeUrl(urlString);
+  if (!url) return false;
+
+  const path = url.pathname.toLowerCase();
+  const segs = getPathSegments(urlString);
+
+  if (/\/category\//.test(path)) return true;
+  if (/\/tag\//.test(path)) return true;
+  if (/\/author\//.test(path)) return true;
+  if (/\/page\/\d+/.test(path)) return true;
+  if (/\/blog$/.test(path) || /\/blog\/?$/.test(path)) return true;
+  if (/\/articles$/.test(path) || /\/posts$/.test(path)) return true;
+  if (/\/news$/.test(path) || /\/resources$/.test(path) || /\/guides$/.test(path)) return true;
+  if (segs.length === 1 && ["blog", "news", "resources", "guides", "articles", "topics"].includes(segs[0])) {
+    return true;
+  }
+
+  return false;
+}
+
+function detectSchemaTypes($) {
+  const types = new Set();
+
+  $("[itemscope][itemtype]").each((_, el) => {
+    const itemType = ($(el).attr("itemtype") || "").trim();
+    if (!itemType) return;
+    const shortType = itemType.split("/").pop();
+    if (shortType) types.add(shortType);
+  });
+
+  $('script[type="application/ld+json"]').each((_, el) => {
+    const raw = $(el).html() || "";
+    const matches = raw.match(/"@type"\s*:\s*"([^"]+)"/g) || [];
+    for (const match of matches) {
+      const typeMatch = match.match(/"@type"\s*:\s*"([^"]+)"/);
+      if (typeMatch?.[1]) {
+        types.add(typeMatch[1]);
+      }
+    }
+  });
+
+  return Array.from(types).slice(0, 20);
+}
+
+function addScore(map, key, amount) {
+  map[key] = (map[key] || 0) + amount;
+}
+
+function bestScoredType(scoreMap, fallback = "general") {
+  let bestType = fallback;
+  let bestScore = -Infinity;
+
+  for (const [type, score] of Object.entries(scoreMap)) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestType = type;
+    }
+  }
+
+  return { type: bestType, score: bestScore };
+}
+
+function classifyPageTypeFromSignals({
+  url,
+  anchorText = "",
+  title = "",
+  h1Text = "",
+  bodyText = "",
+  schemaTypes = [],
+}) {
+  const normalizedUrl = normalizeUrl(url) || url;
+  const urlObj = safeUrl(normalizedUrl);
+  const path = (urlObj?.pathname || "").toLowerCase();
+  const segs = getPathSegments(normalizedUrl);
+  const slug = segs[segs.length - 1] || "";
+  const anchor = cleanText(anchorText).toLowerCase();
+  const titleText = cleanText(title).toLowerCase();
+  const h1 = cleanText(h1Text).toLowerCase();
+  const combined = `${titleText} ${h1} ${anchor}`.toLowerCase();
+  const body = cleanText(bodyText).toLowerCase();
+  const schema = (schemaTypes || []).map((s) => String(s).toLowerCase());
+
+  if (path === "/" || path === "") {
+    return "homepage";
+  }
+
+  const scores = {
+    homepage: 0,
+    article: 0,
+    archive: 0,
+    category: 0,
+    product: 0,
+    service: 0,
+    pricing: 0,
+    conversion: 0,
+    policy: 0,
+    contact: 0,
+    about: 0,
+    location: 0,
+    feature: 0,
+    proof: 0,
+    case_study: 0,
+    general: 0,
+  };
+
+  addScore(scores, "general", 10);
+
+  // Hard page patterns first
+  if (/privacy|cookie|terms|policy|legal|refund|return-policy|shipping-policy|disclaimer/.test(path)) {
+    addScore(scores, "policy", 120);
+  }
+
+  if (/contact|support|help|customer-service/.test(path)) {
+    addScore(scores, "contact", 90);
+  }
+
+  if (/about|company|our-story|who-we-are|team|leadership/.test(path)) {
+    addScore(scores, "about", 80);
+  }
+
+  if (/pricing|plans/.test(path)) {
+    addScore(scores, "pricing", 95);
+  }
+
+  if (/demo|book-demo|get-started|start-now|free-trial|trial|contact-sales/.test(path)) {
+    addScore(scores, "conversion", 95);
+  }
+
+  if (/location|locations|city|area|near-me/.test(path)) {
+    addScore(scores, "location", 75);
+  }
+
+  if (/case-study|case-studies|success-story|success-stories/.test(path)) {
+    addScore(scores, "case_study", 90);
+  }
+
+  if (/testimonial|testimonials|review|reviews/.test(path)) {
+    addScore(scores, "proof", 80);
+  }
+
+  if (/feature|features|capabilities|platform|technology/.test(path)) {
+    addScore(scores, "feature", 70);
+  }
+
+  if (/service|services|solution|solutions/.test(path)) {
+    addScore(scores, "service", 72);
+  }
+
+  if (/product|products|sku|item|\/p\/|\/pdp\/|\/product\//.test(path)) {
+    addScore(scores, "product", 85);
+  }
+
+  if (/category|categories/.test(path)) {
+    addScore(scores, "category", 90);
+  }
+
+  if (/collection|collections|shop|store|catalog|browse/.test(path)) {
+    addScore(scores, "category", 68);
+  }
+
+  if (isArchiveLikeUrl(normalizedUrl)) {
+    addScore(scores, "archive", 100);
+  }
+
+  if (isArticleLikeUrl(normalizedUrl)) {
+    addScore(scores, "article", 88);
+  }
+
+  // Date-like structure strongly hints article/content
+  if (segs.length >= 2 && segs.some(isLikelyDateSegment)) {
+    addScore(scores, "article", 25);
+    addScore(scores, "archive", -8);
+  }
+
+  // Schema hints
+  if (schema.some((s) => ["article", "blogposting", "newsarticle", "medicalwebpage", "howto"].includes(s))) {
+    addScore(scores, "article", 30);
+  }
+  if (schema.some((s) => ["product"].includes(s))) {
+    addScore(scores, "product", 30);
+  }
+  if (schema.some((s) => ["faqpage", "softwareapplication", "service"].includes(s))) {
+    addScore(scores, "service", 14);
+    addScore(scores, "feature", 10);
+  }
+
+  // Content/title hints
+  if (/price|pricing|plans|cost/.test(combined)) {
+    addScore(scores, "pricing", 26);
+  }
+
+  if (/book demo|request demo|get started|free trial|start free|contact sales|enquire now/.test(combined)) {
+    addScore(scores, "conversion", 28);
+  }
+
+  if (/service|services|solution|solutions/.test(combined)) {
+    addScore(scores, "service", 18);
+  }
+
+  if (/case study|success story/.test(combined)) {
+    addScore(scores, "case_study", 24);
+  }
+
+  if (/testimonial|review|client story/.test(combined)) {
+    addScore(scores, "proof", 18);
+  }
+
+  if (/about us|our company|our team/.test(combined)) {
+    addScore(scores, "about", 22);
+  }
+
+  if (/contact us|support/.test(combined)) {
+    addScore(scores, "contact", 22);
+  }
+
+  if (/category|categories|browse|archive|archives/.test(combined)) {
+    addScore(scores, "archive", 22);
+    addScore(scores, "category", 16);
+  }
+
+  if (/blog|blogs|news|article|articles|post|posts|insights|guides|resources/.test(combined)) {
+    addScore(scores, "article", 14);
+    addScore(scores, "archive", 14);
+  }
+
+  // Body/content hints
+  if (/posted on|published on|written by|author|leave a comment|read more/.test(body)) {
+    addScore(scores, "article", 18);
+  }
+
+  if (/category archives|tag archives|author archives/.test(body)) {
+    addScore(scores, "archive", 25);
+  }
+
+  // URL shape hints
+  if (pathDepth(normalizedUrl) >= 2 && slug.split("-").length >= 3) {
+    addScore(scores, "article", 10);
+  }
+
+  if (pathDepth(normalizedUrl) === 1 && slug.split("-").length <= 2) {
+    addScore(scores, "service", 4);
+    addScore(scores, "pricing", 4);
+    addScore(scores, "feature", 3);
+  }
+
+  // Anti-false-positive logic for content pages
+  const articleBias =
+    isArticleLikeUrl(normalizedUrl) ||
+    schema.some((s) => ["article", "blogposting", "newsarticle", "howto"].includes(s)) ||
+    /posted on|published on|written by|author/.test(body);
+
+  if (articleBias) {
+    addScore(scores, "article", 25);
+    addScore(scores, "pricing", -30);
+    addScore(scores, "conversion", -26);
+    addScore(scores, "service", -16);
+    addScore(scores, "feature", -10);
+  }
+
+  const archiveBias = isArchiveLikeUrl(normalizedUrl) || /category archives|tag archives|author archives/.test(body);
+  if (archiveBias) {
+    addScore(scores, "archive", 20);
+    addScore(scores, "pricing", -22);
+    addScore(scores, "conversion", -18);
+    addScore(scores, "service", -12);
+  }
+
+  // Commercial intent should be explicit, not accidental
+  const strongCommercialIntent =
+    /pricing|plans|book demo|get started|free trial|request demo|contact sales/.test(combined) ||
+    /pricing|plans|demo|trial/.test(path);
+
+  if (!strongCommercialIntent) {
+    addScore(scores, "pricing", -8);
+    addScore(scores, "conversion", -8);
+  }
+
+  // Policy/contact/about should override noisy content
+  const hardTypes = [
+    { type: "policy", min: 100 },
+    { type: "contact", min: 90 },
+    { type: "about", min: 80 },
+  ];
+
+  for (const rule of hardTypes) {
+    if ((scores[rule.type] || 0) >= rule.min) {
+      return rule.type;
+    }
+  }
+
+  const winner = bestScoredType(scores, "general");
+
+  // If article and archive are close, use URL shape to break tie
+  if (
+    Math.abs((scores.article || 0) - (scores.archive || 0)) <= 8 &&
+    Math.max(scores.article || 0, scores.archive || 0) > 40
+  ) {
+    if (isArticleLikeUrl(normalizedUrl)) return "article";
+    if (isArchiveLikeUrl(normalizedUrl)) return "archive";
+  }
+
+  // Safety rails against false pricing/service on content URLs
+  if (winner.type === "pricing" || winner.type === "conversion" || winner.type === "service") {
+    if (articleBias) return "article";
+    if (archiveBias) return "archive";
+  }
+
+  return winner.type;
 }
 
 function inferSiteTypeFromHomepage(links = []) {
@@ -290,37 +605,6 @@ function extractInternalLinks($, pageUrl, seedUrl) {
   return results;
 }
 
-function detectSchemaTypes($) {
-  const types = new Set();
-
-  $("[itemscope][itemtype]").each((_, el) => {
-    const itemType = ($(el).attr("itemtype") || "").trim();
-    if (!itemType) return;
-    const shortType = itemType.split("/").pop();
-    if (shortType) types.add(shortType);
-  });
-
-  $('script[type="application/ld+json"]').each((_, el) => {
-    const raw = $(el).html() || "";
-    const matches = raw.match(/"@type"\s*:\s*"([^"]+)"/g) || [];
-    for (const match of matches) {
-      const typeMatch = match.match(/"@type"\s*:\s*"([^"]+)"/);
-      if (typeMatch?.[1]) {
-        types.add(typeMatch[1]);
-      }
-    }
-  });
-
-  return Array.from(types).slice(0, 20);
-}
-
-function fetchPriorityLabel(score) {
-  if (score >= 85) return "critical";
-  if (score >= 65) return "high";
-  if (score >= 40) return "medium";
-  return "low";
-}
-
 function buildPriorityScore({
   candidateUrl,
   anchorText,
@@ -330,7 +614,11 @@ function buildPriorityScore({
   homepageNavSet,
   siblingTypeCounts,
 }) {
-  const pageType = classifyPageType(candidateUrl, anchorText);
+  const pageType = classifyPageTypeFromSignals({
+    url: candidateUrl,
+    anchorText,
+  });
+
   let score = 0;
 
   const baseByType = {
@@ -341,12 +629,13 @@ function buildPriorityScore({
     product: 80,
     feature: 70,
     category: 58,
+    archive: 46,
+    article: 42,
     location: 56,
     case_study: 52,
     proof: 48,
     about: 40,
     general: 36,
-    blog: 28,
     contact: 22,
     policy: 5,
   };
@@ -356,19 +645,24 @@ function buildPriorityScore({
   if (siteType === "ecommerce") {
     if (pageType === "product") score += 16;
     if (pageType === "category") score += 10;
-    if (pageType === "blog") score -= 12;
+    if (pageType === "article") score -= 10;
+    if (pageType === "archive") score -= 12;
     if (pageType === "service") score -= 6;
   } else if (siteType === "service") {
     if (pageType === "service") score += 18;
     if (pageType === "pricing") score += 12;
     if (pageType === "conversion") score += 12;
-    if (pageType === "blog") score -= 10;
+    if (pageType === "article") score -= 8;
+    if (pageType === "archive") score -= 12;
     if (pageType === "category") score -= 10;
   } else if (siteType === "content") {
-    if (pageType === "blog") score += 10;
-    if (pageType === "case_study") score += 6;
-    if (pageType === "category") score -= 8;
+    if (pageType === "article") score += 16;
+    if (pageType === "archive") score += 6;
+    if (pageType === "case_study") score += 4;
+    if (pageType === "category") score -= 6;
     if (pageType === "product") score -= 8;
+    if (pageType === "pricing") score -= 8;
+    if (pageType === "conversion") score -= 8;
   }
 
   if (homepageNavSet.has(candidateUrl)) score += 18;
@@ -377,14 +671,16 @@ function buildPriorityScore({
   if (parentPageType === "category" && pageType === "product") score += 10;
   if (parentPageType === "homepage" && pageType === "service") score += 8;
   if (parentPageType === "homepage" && pageType === "pricing") score += 8;
+  if (parentPageType === "archive" && pageType === "article") score += 16;
+  if (parentPageType === "article" && pageType === "article") score -= 6;
 
   const anchor = (anchorText || "").toLowerCase();
   if (/pricing|plans|book demo|demo|trial|get started|contact sales/.test(anchor)) score += 10;
   if (/services|solutions|products|shop|store|collections/.test(anchor)) score += 6;
+  if (/read more|continue reading|learn more|article|post/.test(anchor) && pageType === "article") score += 8;
   if (/privacy|terms|cookie|refund|shipping/.test(anchor)) score -= 18;
 
   score += scoreSlugHint(candidateUrl);
-
   score -= depth * 10;
 
   const segs = getPathSegments(candidateUrl);
@@ -392,8 +688,10 @@ function buildPriorityScore({
   else if (segs.length >= 4) score -= 6;
 
   const currentCount = siblingTypeCounts[pageType] || 0;
+
   if (pageType === "category" && currentCount >= 2) score -= 18;
-  if (pageType === "blog" && currentCount >= 2) score -= 18;
+  if (pageType === "archive" && currentCount >= 2) score -= 20;
+  if (pageType === "article" && currentCount >= 4) score -= 8;
   if (pageType === "policy" && currentCount >= 1) score -= 24;
   if (pageType === "contact" && currentCount >= 1) score -= 12;
   if (pageType === "product" && currentCount >= 3) score -= 10;
@@ -465,7 +763,14 @@ function extractSeoData(html, url, status, contentType, loadMs, depth) {
 
   const schemaTypes = detectSchemaTypes($);
 
-  const pageType = classifyPageType(url, h1Text, title);
+  const pageType = classifyPageTypeFromSignals({
+    url,
+    title,
+    h1Text,
+    bodyText,
+    schemaTypes,
+  });
+
   const internalLinks = extractInternalLinks($, url, url);
 
   return {
@@ -475,6 +780,7 @@ function extractSeoData(html, url, status, contentType, loadMs, depth) {
     canonicalUrl,
     h1Count,
     h1Text: h1Text || null,
+    bodyText,
     wordCount,
     robotsMeta: robotsMeta || null,
     noindex,
@@ -541,7 +847,8 @@ function computeVisibilityScore({
     service: 12,
     product: 12,
     category: 8,
-    blog: 8,
+    archive: 6,
+    article: 10,
     location: 8,
     proof: 5,
     case_study: 5,
@@ -549,6 +856,7 @@ function computeVisibilityScore({
     general: 2,
     contact: 0,
     policy: 0,
+    feature: 7,
   };
 
   score += typeBonus[pageType] || 0;
@@ -570,7 +878,8 @@ function computeRevenueScore(pageType) {
     feature: 58,
     about: 28,
     general: 30,
-    blog: 34,
+    article: 34,
+    archive: 20,
     contact: 22,
     policy: 5,
   };
@@ -610,7 +919,7 @@ function computePageOpportunityScore({
 
   if (!indexable) score += 12;
   if (statusCode >= 400) score += 12;
-  if (wordCount < 250 && ["service", "pricing", "product", "category", "blog", "general"].includes(pageType)) {
+  if (wordCount < 250 && ["service", "pricing", "product", "category", "article", "general", "homepage"].includes(pageType)) {
     score += 10;
   }
 
@@ -704,7 +1013,7 @@ function buildActions({
       steps: [
         "Check robots meta directives on the page.",
         "Confirm whether noindex is intentional.",
-        "Remove noindex from pages that should rank.",
+        "Remove noindex from pages that should rank."
       ],
       score: 94,
     });
@@ -783,7 +1092,7 @@ function buildActions({
     });
   }
 
-  if (wordCount < 250 && ["service", "pricing", "product", "category", "blog", "general", "homepage"].includes(pageType)) {
+  if (wordCount < 250 && ["service", "pricing", "product", "category", "article", "general", "homepage"].includes(pageType)) {
     pushAction({
       actionType: "expand_content",
       summary: "The page content looks thin for its intent.",
@@ -1036,7 +1345,7 @@ async function processSinglePage({
   } catch (err) {
     fetchError = err.message || "Unknown fetch error";
 
-    const pageType = classifyPageType(url);
+    const pageType = classifyPageTypeFromSignals({ url });
     const pageId = await getOrCreatePage({
       siteId,
       url,
@@ -1134,7 +1443,7 @@ async function processSinglePage({
   const effectiveUrl = normalizeUrl(finalUrl) || normalizeUrl(url) || url;
 
   if (!fetched.contentType.includes("text/html")) {
-    const pageType = classifyPageType(effectiveUrl);
+    const pageType = classifyPageTypeFromSignals({ url: effectiveUrl });
     const pageId = await getOrCreatePage({
       siteId,
       url: effectiveUrl,
@@ -1222,13 +1531,9 @@ async function processSinglePage({
     depth
   );
 
-  const pageType = classifyPageType(
-    effectiveUrl,
-    extracted.h1Text || "",
-    extracted.title || ""
-  );
-
+  const pageType = extracted.pageType;
   const links = extractInternalLinks(extracted.$, effectiveUrl, seedUrl);
+
   const pageId = await getOrCreatePage({
     siteId,
     url: effectiveUrl,
@@ -1276,6 +1581,10 @@ async function processSinglePage({
   });
 
   const priorityBucket = computePriorityBucket(pageOpportunityScore);
+
+  console.log(
+    `[page classified] ${effectiveUrl} -> ${pageType} depth=${depth} words=${extracted.wordCount}`
+  );
 
   await upsertPageSnapshotCrawl({
     snapshotId,
