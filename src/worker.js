@@ -2199,32 +2199,7 @@ async function runCrawlJob(job) {
   }
 }
 
-async function heartbeat(jobId) {
-  const { error } = await supabase.rpc("scc_job_heartbeat", {
-    p_job_id: jobId,
-  });
 
-  if (error) {
-    console.error(`[job heartbeat] job=${jobId}`, error.message);
-  }
-}
-
-async function completeJob(jobId, status, errorMessage = null) {
-  const payload = {
-    p_job_id: jobId,
-    p_status: status,
-  };
-
-  if (errorMessage) {
-    payload.p_error = String(errorMessage).slice(0, 1000);
-  }
-
-  const { error } = await supabase.rpc("scc_complete_crawl_job", payload);
-
-  if (error) {
-    console.error(`[job complete] job=${jobId} status=${status}`, error.message);
-  }
-}
 
 async function rescueStaleJobs() {
   try {
