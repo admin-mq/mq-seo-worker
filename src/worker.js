@@ -2255,16 +2255,15 @@ async function main() {
   while (true) {
     try {
       await rescueStaleJobs();
+
       const job = await claimNextJob();
       if (!job) {
         await sleep(POLL_MS);
         continue;
       }
+
       await runCrawlJob(job);
     } catch (err) {
-      await markSnapshotFailed(snapshotId, "crawl_execution", err.message || "Unknown worker error");
-await completeJob(jobId, "failed", err.message || "Unknown worker error");
-throw err;
       console.error("[worker loop error]", err);
       await sleep(POLL_MS);
     }
