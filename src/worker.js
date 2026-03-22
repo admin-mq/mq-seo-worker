@@ -2356,6 +2356,24 @@ async function markSnapshotRunning(snapshotId) {
   if (error) console.error(`[snapshot running update] snapshot=${snapshotId}`, error.message);
 }
 
+async function fetchGscData(siteId, snapshotId) {
+  const fnUrl = `${SUPABASE_URL}/functions/v1/gsc-fetch-data`;
+  const res = await fetch(fnUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+    body: JSON.stringify({ site_id: siteId, snapshot_id: snapshotId }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    console.log(`[gsc fetch] updated ${data.updated}/${data.pages} pages for snapshot=${snapshotId}`);
+  } else {
+    console.log(`[gsc fetch] skipped (${data.reason || "unknown"}) for snapshot=${snapshotId}`);
+  }
+}
+
 async function markSnapshotFinished(snapshotId) {
   const { error } = await supabase
     .from("scc_snapshots")
@@ -2629,6 +2647,11 @@ async function runCrawlJob(job) {
     await markSnapshotFinished(snapshotId);
     await completeJob(jobId, "completed");
     console.log(`[job done] id=${jobId} pages=${pagesDone} errors=${errorsCount}`);
+
+    // Enrich with Google Search Console data if connected (non-blocking)
+    fetchGscData(siteId, snapshotId).catch((err) =>
+      console.warn(`[gsc fetch] skipped: ${err.message}`)
+    );
   } catch (err) {
     console.error(`[job failed] id=${jobId}`, err);
     await markSnapshotFailed(snapshotId, "worker_run", err.message || "Unknown crawl error");
