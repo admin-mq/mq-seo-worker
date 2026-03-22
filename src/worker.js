@@ -1744,6 +1744,164 @@ async function replaceActions({ snapshotId, pageId, actions }) {
   }
 }
 
+async function generateSiteWideActions(snapshotId, summaryState) {
+  const { pages_crawled, page_type_counts, issues, score_lists } = summaryState;
+  if (!pages_crawled || pages_crawled === 0) return;
+
+  const actions = [];
+  const avgStructural = avg(score_lists.structural);
+  const pct = (n) => Math.round((n / pages_crawled) * 100);
+
+  if (issues.missing_meta_descriptions > 0) {
+    const p = pct(issues.missing_meta_descriptions);
+    actions.push({
+      action_type: "site_missing_meta_descriptions",
+      title: `${issues.missing_meta_descriptions} of ${pages_crawled} pages missing meta descriptions`,
+      severity: p >= 50 ? "high" : "medium",
+      why_it_matters: "Meta descriptions influence click-through rates from search results. Missing them means Google auto-generates snippets, often poorly.",
+      technical_reason: `${p}% of crawled pages have no meta description tag.`,
+      expected_impact_range: p >= 50 ? "High" : "Medium-High",
+      steps: [
+        "Audit all pages missing meta descriptions.",
+        "Write unique, keyword-rich descriptions of 120–160 characters for each.",
+        "Prioritise your highest-traffic and highest-opportunity pages first.",
+      ],
+    });
+  }
+
+  if (issues.missing_h1s > 0) {
+    const p = pct(issues.missing_h1s);
+    actions.push({
+      action_type: "site_missing_h1s",
+      title: `${issues.missing_h1s} of ${pages_crawled} pages missing H1 tags`,
+      severity: p >= 50 ? "high" : "medium",
+      why_it_matters: "H1 tags are the strongest on-page relevance signal. Missing H1s weaken topical clarity for search engines.",
+      technical_reason: `${p}% of crawled pages have no H1 element.`,
+      expected_impact_range: "Medium",
+      steps: [
+        "Add a single, descriptive H1 to every page.",
+        "Make the H1 reflect the primary keyword or topic of the page.",
+        "Ensure H1 is distinct from the title tag but complementary.",
+      ],
+    });
+  }
+
+  if (issues.non_indexable_pages > 0 && issues.non_indexable_pages < pages_crawled) {
+    actions.push({
+      action_type: "site_non_indexable_pages",
+      title: `${issues.non_indexable_pages} page${issues.non_indexable_pages > 1 ? "s" : ""} blocked from indexing`,
+      severity: "high",
+      why_it_matters: "Non-indexable pages are invisible to search engines and generate zero organic traffic.",
+      technical_reason: "These pages have noindex directives or canonical tags pointing elsewhere.",
+      expected_impact_range: "High",
+      steps: [
+        "Review each non-indexable page and confirm it should be blocked.",
+        "For pages that should rank, remove noindex tags and fix canonical issues.",
+        "Submit corrected pages to Google Search Console for re-indexing.",
+      ],
+    });
+  }
+
+  if (issues.thin_content_pages >= 2) {
+    const p = pct(issues.thin_content_pages);
+    actions.push({
+      action_type: "site_thin_content",
+      title: `${issues.thin_content_pages} pages have thin content`,
+      severity: p >= 50 ? "high" : "medium",
+      why_it_matters: "Thin content dilutes topical authority and suppresses rankings across your whole site, not just the thin pages.",
+      technical_reason: `${p}% of crawled pages fall below the word-count threshold for their page type.`,
+      expected_impact_range: "Medium-High",
+      steps: [
+        "Identify thin pages and decide: expand, consolidate, or noindex.",
+        "Prioritise expanding content on commercial and service pages first.",
+        "Consider merging thin related pages into comprehensive hub pages.",
+      ],
+    });
+  }
+
+  if (avgStructural < 40 && pages_crawled >= 2) {
+    actions.push({
+      action_type: "site_low_structural",
+      title: `Site-wide structural SEO is weak (avg score: ${avgStructural}/100)`,
+      severity: "high",
+      why_it_matters: "Structural SEO is the foundation. A low average score indicates systemic technical debt that suppresses all pages simultaneously.",
+      technical_reason: `Average structural score across ${pages_crawled} pages is ${avgStructural}/100.`,
+      expected_impact_range: "High",
+      steps: [
+        "Work through the per-page recommendations starting with highest-opportunity pages.",
+        "Fix missing titles and meta descriptions across all pages.",
+        "Ensure every page has a clear H1 and proper heading hierarchy.",
+        "Improve internal linking so all key pages are reachable within 2 clicks from the homepage.",
+      ],
+    });
+  }
+
+  const hasService = (page_type_counts.service || 0) > 0;
+  const hasProduct = (page_type_counts.product || 0) > 0;
+  const hasPricing = (page_type_counts.pricing || 0) > 0;
+  const hasArticle = (page_type_counts.article || 0) > 0;
+
+  if (!hasPricing && (hasProduct || hasService) && pages_crawled >= 3) {
+    actions.push({
+      action_type: "site_missing_pricing_page",
+      title: "No pricing page found",
+      severity: "medium",
+      why_it_matters: "Pricing pages rank for high-intent 'cost' and 'pricing' queries and are among the highest-converting pages on any site.",
+      technical_reason: "No page was classified as a pricing or cost page during the crawl.",
+      expected_impact_range: "Medium-High",
+      steps: [
+        "Create a dedicated /pricing or /plans page.",
+        "Include pricing tiers, a features comparison, and a clear CTA.",
+        "Target keywords like '[product] pricing', '[service] cost', 'how much does X cost'.",
+      ],
+    });
+  }
+
+  if (!hasArticle && pages_crawled >= 3) {
+    actions.push({
+      action_type: "site_no_content_strategy",
+      title: "No blog or content pages found",
+      severity: "medium",
+      why_it_matters: "Content pages drive top-of-funnel traffic and build topical authority, which lifts rankings for your commercial pages too.",
+      technical_reason: "No article, blog, or guide pages were discovered during the crawl.",
+      expected_impact_range: "Medium",
+      steps: [
+        "Start a blog or resources section targeting informational keywords in your niche.",
+        "Publish 2–4 articles per month consistently.",
+        "Internally link from blog posts back to your commercial and service pages.",
+      ],
+    });
+  }
+
+  if (actions.length === 0) return;
+
+  // Remove any stale site-wide actions for this snapshot
+  await supabase.from("scc_actions").delete()
+    .eq("snapshot_id", snapshotId)
+    .is("page_id", null);
+
+  const rows = actions.map((a, i) => ({
+    snapshot_id:           snapshotId,
+    page_id:               null,
+    action_type:           a.action_type,
+    title:                 a.title,
+    why_it_matters:        a.why_it_matters,
+    technical_reason:      a.technical_reason,
+    expected_impact_range: a.expected_impact_range,
+    steps:                 a.steps,
+    severity:              a.severity,
+    priority:              i + 1,
+    status:                "open",
+  }));
+
+  const { error } = await supabase.from("scc_actions").insert(rows);
+  if (error) {
+    console.error(`[siteWideActions] snapshot=${snapshotId}`, error.message);
+  } else {
+    console.log(`[siteWideActions] inserted ${rows.length} site-wide actions for snapshot=${snapshotId}`);
+  }
+}
+
 async function updateJobProgress(jobId, pagesDone, errorsCount) {
   const { error } = await supabase
     .from("scc_crawl_jobs")
@@ -2316,6 +2474,7 @@ async function runCrawlJob(job) {
       summaryState.site_type = "mixed";
       const summaryJson = buildSnapshotSummary(summaryState);
       await updateSnapshotSummary(snapshotId, summaryJson);
+      await generateSiteWideActions(snapshotId, summaryState);
 
       await markSnapshotFinished(snapshotId);
       await completeJob(jobId, "completed");
@@ -2465,6 +2624,7 @@ async function runCrawlJob(job) {
     summaryState.errors_count = errorsCount;
     const summaryJson = buildSnapshotSummary(summaryState);
     await updateSnapshotSummary(snapshotId, summaryJson);
+    await generateSiteWideActions(snapshotId, summaryState);
 
     await markSnapshotFinished(snapshotId);
     await completeJob(jobId, "completed");
