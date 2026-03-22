@@ -1443,8 +1443,9 @@ function buildSnapshotSummary(summaryState) {
     generated_at: nowIso(),
     site_type: summaryState.site_type || "mixed",
     pages_crawled: pagesCrawled,
-    page_type_counts: pageTypeCounts,
-    average_scores: {
+    errors: summaryState.errors_count || 0,
+    page_type_mix: pageTypeCounts,
+    avg_scores: {
       structural: avgStructural,
       visibility: avgVisibility,
       revenue: avgRevenue,
