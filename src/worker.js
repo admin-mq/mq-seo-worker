@@ -2755,6 +2755,13 @@ async function runCrawlJob(job) {
     fetchPsiData(snapshotId).catch((err) =>
       console.warn(`[psi fetch] skipped: ${err.message}`)
     );
+
+    // Run money calculation engine (non-blocking, runs after PSI has a moment to land)
+    setTimeout(() => {
+      runMoneyEngine(siteId, snapshotId, seedUrl, summaryState).catch((err) =>
+        console.warn(`[money engine] skipped: ${err.message}`)
+      );
+    }, 8000);
   } catch (err) {
     console.error(`[job failed] id=${jobId}`, err);
     await markSnapshotFailed(snapshotId, "worker_run", err.message || "Unknown crawl error");
@@ -2778,7 +2785,414 @@ async function runCrawlJob(job) {
   }
 }
 
+// =============================================
+// MONEY CALCULATION ENGINE
+// =============================================
 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GOOGLE_CSE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
+const GOOGLE_API_KEY_MONEY = process.env.GOOGLE_API_KEY;
+
+const CTR_TABLE = {
+  1: 28.5, 2: 15.7, 3: 11.0, 4: 8.0, 5: 7.2,
+  6: 5.1, 7: 4.0, 8: 3.2, 9: 2.8, 10: 2.5,
+};
+function ctrAtPosition(pos) {
+  if (pos <= 0) return CTR_TABLE[1];
+  if (pos > 20) return 0.4;
+  if (pos > 10) return 1.0;
+  return CTR_TABLE[pos] || 1.0;
+}
+
+const BENCHMARKS = {
+  US: {
+    ecommerce:         { convRate: 0.020, avgOrder: 85,   valuePerVisitor: 1.50 },
+    saas:              { convRate: 0.035, avgOrder: 99,   valuePerVisitor: 3.00 },
+    legal:             { convRate: 0.030, avgOrder: 2500, valuePerVisitor: 62.50 },
+    "real estate":     { convRate: 0.010, avgOrder: 8000, valuePerVisitor: 80.00 },
+    healthcare:        { convRate: 0.028, avgOrder: 250,  valuePerVisitor: 6.25 },
+    financial:         { convRate: 0.022, avgOrder: 500,  valuePerVisitor: 10.00 },
+    "home services":   { convRate: 0.040, avgOrder: 350,  valuePerVisitor: 13.00 },
+    restaurant:        { convRate: 0.045, avgOrder: 45,   valuePerVisitor: 1.80 },
+    education:         { convRate: 0.022, avgOrder: 400,  valuePerVisitor: 8.00 },
+    travel:            { convRate: 0.015, avgOrder: 800,  valuePerVisitor: 12.00 },
+    auto:              { convRate: 0.030, avgOrder: 600,  valuePerVisitor: 15.00 },
+    beauty:            { convRate: 0.028, avgOrder: 120,  valuePerVisitor: 3.00 },
+    service:           { convRate: 0.025, avgOrder: 500,  valuePerVisitor: 8.00 },
+    default:           { convRate: 0.020, avgOrder: 300,  valuePerVisitor: 5.00 },
+  },
+  UK: {
+    ecommerce:         { convRate: 0.020, avgOrder: 65,   valuePerVisitor: 1.20 },
+    saas:              { convRate: 0.035, avgOrder: 79,   valuePerVisitor: 2.40 },
+    legal:             { convRate: 0.030, avgOrder: 2000, valuePerVisitor: 50.00 },
+    "real estate":     { convRate: 0.010, avgOrder: 6000, valuePerVisitor: 60.00 },
+    healthcare:        { convRate: 0.028, avgOrder: 200,  valuePerVisitor: 5.00 },
+    financial:         { convRate: 0.022, avgOrder: 400,  valuePerVisitor: 8.00 },
+    "home services":   { convRate: 0.040, avgOrder: 280,  valuePerVisitor: 10.50 },
+    restaurant:        { convRate: 0.045, avgOrder: 35,   valuePerVisitor: 1.40 },
+    education:         { convRate: 0.022, avgOrder: 320,  valuePerVisitor: 6.40 },
+    travel:            { convRate: 0.015, avgOrder: 650,  valuePerVisitor: 9.75 },
+    auto:              { convRate: 0.030, avgOrder: 480,  valuePerVisitor: 12.00 },
+    beauty:            { convRate: 0.028, avgOrder: 95,   valuePerVisitor: 2.40 },
+    service:           { convRate: 0.025, avgOrder: 400,  valuePerVisitor: 6.50 },
+    default:           { convRate: 0.020, avgOrder: 250,  valuePerVisitor: 4.00 },
+  },
+};
+
+function detectMarket(seedUrl) {
+  try {
+    const url = new URL(seedUrl.startsWith("http") ? seedUrl : `https://${seedUrl}`);
+    const h = url.hostname.toLowerCase();
+    if (h.endsWith(".co.uk") || h.endsWith(".org.uk") || h.endsWith(".me.uk") || h.endsWith(".uk")) {
+      return { market: "UK", currency: "GBP", symbol: "£", confidence: 90 };
+    }
+    return { market: "US", currency: "USD", symbol: "$", confidence: 60 };
+  } catch {
+    return { market: "US", currency: "USD", symbol: "$", confidence: 40 };
+  }
+}
+
+function classifyIndustry(pageTypeCounts, siteType, seedUrl) {
+  const domain = (seedUrl || "").toLowerCase();
+  const types = Object.keys(pageTypeCounts || {});
+
+  if (siteType === "ecommerce" || types.includes("product") || types.includes("category")) return "ecommerce";
+  if (types.includes("pricing") || /saas|software|app\./.test(domain)) return "saas";
+  if (/law|legal|solicitor|attorney|barrister/.test(domain)) return "legal";
+  if (/restaurant|cafe|bistro|diner|food/.test(domain)) return "restaurant";
+  if (/estate|property|homes|realty|realtor/.test(domain)) return "real estate";
+  if (/health|medical|clinic|dental|doctor|physio/.test(domain)) return "healthcare";
+  if (/finance|mortgage|insurance|invest|accountan/.test(domain)) return "financial";
+  if (/hotel|travel|holiday|tour|flight/.test(domain)) return "travel";
+  if (/school|college|university|course|academy|learn/.test(domain)) return "education";
+  if (/plumb|electric|clean|pest|garden|landscap|roof|build/.test(domain)) return "home services";
+  if (/car|auto|vehicle|garage|tyre|tire|mechanic/.test(domain)) return "auto";
+  if (/salon|spa|beauty|hair|nail|skin/.test(domain)) return "beauty";
+  if (types.includes("service")) return "service";
+  return "service";
+}
+
+async function safeBrowsingCheck(url) {
+  if (!GOOGLE_API_KEY_MONEY) return false;
+  try {
+    const res = await axios.post(
+      `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${GOOGLE_API_KEY_MONEY}`,
+      {
+        client: { clientId: "seq-marketersquest", clientVersion: "1.0" },
+        threatInfo: {
+          threatTypes: ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
+          platformTypes: ["ANY_PLATFORM"],
+          threatEntryTypes: ["URL"],
+          threatEntries: [{ url }],
+        },
+      },
+      { timeout: 8000 }
+    );
+    return !!(res.data && res.data.matches && res.data.matches.length > 0);
+  } catch (e) {
+    console.warn("[safe browsing] check failed:", e.message);
+    return false;
+  }
+}
+
+async function getIndexedPageCount(domain) {
+  if (!GOOGLE_API_KEY_MONEY || !GOOGLE_CSE_ID) return null;
+  try {
+    const cleanDomain = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    const res = await axios.get("https://www.googleapis.com/customsearch/v1", {
+      params: {
+        key: GOOGLE_API_KEY_MONEY,
+        cx: GOOGLE_CSE_ID,
+        q: `site:${cleanDomain}`,
+        num: 1,
+      },
+      timeout: 8000,
+    });
+    const total = res.data?.searchInformation?.totalResults;
+    return total ? parseInt(total, 10) : null;
+  } catch (e) {
+    console.warn("[custom search] indexed pages failed:", e.message);
+    return null;
+  }
+}
+
+function getSiteHealthCTRPosition(issues) {
+  const critical = (issues.non_indexable_pages || 0) +
+    (issues.missing_titles || 0) +
+    (issues.canonical_issues || 0);
+  if (critical === 0) return 4;
+  if (critical <= 2) return 7;
+  if (critical <= 5) return 12;
+  return 18;
+}
+
+function calculateMoneyImpact({ market, industry, issues, psiMobile, indexedPages, summaryState }) {
+  const benchmark = BENCHMARKS[market]?.[industry] || BENCHMARKS[market]?.default || BENCHMARKS.US.default;
+  const valuePerVisitor = benchmark.valuePerVisitor;
+
+  const effectiveIndexed = indexedPages || Math.max(summaryState.pages_crawled * 3, 5);
+  const avgImpressionsPerPage = 200;
+  const position = getSiteHealthCTRPosition(issues);
+  const baseCtr = ctrAtPosition(position) / 100;
+  const estimatedMonthlyClicks = Math.round(effectiveIndexed * avgImpressionsPerPage * baseCtr);
+
+  const issueResults = [];
+
+  // Missing title tags
+  if (issues.missing_titles > 0) {
+    const lostCtr = (ctrAtPosition(position) - ctrAtPosition(Math.min(position + 4, 20))) / 100;
+    const lostClicks = estimatedMonthlyClicks * lostCtr * (issues.missing_titles / Math.max(summaryState.pages_crawled, 1));
+    const loss = Math.round(lostClicks * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "missing_title", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "easy", fixTimeMinutes: 30 });
+  }
+
+  // Missing meta descriptions
+  if (issues.missing_meta_descriptions > 0) {
+    const lostCtr = (ctrAtPosition(position) - ctrAtPosition(Math.min(position + 2, 20))) / 100;
+    const lostClicks = estimatedMonthlyClicks * lostCtr * (issues.missing_meta_descriptions / Math.max(summaryState.pages_crawled, 1));
+    const loss = Math.round(lostClicks * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "missing_meta", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "easy", fixTimeMinutes: 45 });
+  }
+
+  // Missing H1
+  if (issues.missing_h1s > 0) {
+    const lostCtr = (ctrAtPosition(position) - ctrAtPosition(Math.min(position + 3, 20))) / 100;
+    const lostClicks = estimatedMonthlyClicks * lostCtr * (issues.missing_h1s / Math.max(summaryState.pages_crawled, 1));
+    const loss = Math.round(lostClicks * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "missing_h1", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "easy", fixTimeMinutes: 20 });
+  }
+
+  // Canonical issues
+  if (issues.canonical_issues > 0) {
+    const lostCtr = (ctrAtPosition(position) - ctrAtPosition(Math.min(position + 5, 20))) / 100;
+    const lostClicks = estimatedMonthlyClicks * lostCtr * (issues.canonical_issues / Math.max(summaryState.pages_crawled, 1));
+    const loss = Math.round(lostClicks * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "canonical_issues", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "medium", fixTimeMinutes: 60 });
+  }
+
+  // Non-indexable pages
+  if (issues.non_indexable_pages > 0) {
+    const lostClicks = estimatedMonthlyClicks * 0.15 * (issues.non_indexable_pages / Math.max(summaryState.pages_crawled, 1));
+    const loss = Math.round(lostClicks * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "non_indexable", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "medium", fixTimeMinutes: 90 });
+  }
+
+  // Slow page speed (PSI)
+  if (psiMobile != null) {
+    let bounceIncrease = 0;
+    if (psiMobile < 50) bounceIncrease = 0.45;
+    else if (psiMobile < 90) bounceIncrease = 0.22;
+    if (bounceIncrease > 0) {
+      const loss = Math.round(estimatedMonthlyClicks * bounceIncrease * valuePerVisitor);
+      if (loss > 0) issueResults.push({ issueId: "slow_speed", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "hard", fixTimeMinutes: 240 });
+    }
+  }
+
+  // Thin content
+  if (issues.thin_content_pages > 0) {
+    const lostCtr = (ctrAtPosition(position) - ctrAtPosition(Math.min(position + 2, 20))) / 100;
+    const lostClicks = estimatedMonthlyClicks * lostCtr * (issues.thin_content_pages / Math.max(summaryState.pages_crawled, 1));
+    const loss = Math.round(lostClicks * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "thin_content", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "medium", fixTimeMinutes: 120 });
+  }
+
+  issueResults.sort((a, b) => b.loss - a.loss);
+
+  const totalLossRaw = issueResults.reduce((sum, i) => sum + i.loss, 0);
+  const totalMin = Math.round(totalLossRaw * 0.6);
+  const totalMax = Math.round(totalLossRaw * 1.2);
+
+  return {
+    valuePerVisitor,
+    estimatedMonthlyClicks,
+    issueResults,
+    totalMonthlyLossMin: totalMin,
+    totalMonthlyLossMax: totalMax,
+  };
+}
+
+async function callOpenAI(model, systemPrompt, userPrompt) {
+  if (!OPENAI_API_KEY) return null;
+  try {
+    const res = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 30000,
+      }
+    );
+    return res.data.choices[0].message.content;
+  } catch (e) {
+    console.warn("[openai] call failed:", e.message);
+    return null;
+  }
+}
+
+async function generateExecutiveSummary({ market, symbol, businessName, issueCount, totalMin, totalMax, psiScore, indexedPages, industry }) {
+  const systemPrompt = `You are a trusted business advisor speaking to a business owner in the ${market} market. Write a business health report executive summary. Plain language. Money focused. Zero jargon. Under 100 words. Use ${symbol} for all figures. ${market === "UK" ? "UK tone: measured, professional." : "US tone: direct, confident, action-oriented."}`;
+  const userPrompt = `Business: ${businessName || "this website"} — ${industry} business
+Market: ${market} | Currency: ${symbol}
+Issues found: ${issueCount}
+Estimated monthly loss: ${symbol}${totalMin} – ${symbol}${totalMax}
+PageSpeed score: ${psiScore ?? "unknown"}/100
+Google indexed pages: ${indexedPages ?? "unknown"}
+Write the summary now. Plain text only, no markdown.`;
+  return await callOpenAI("gpt-4o", systemPrompt, userPrompt);
+}
+
+async function generateIssueNarrative({ issueId, market, symbol, industry, loss, min, max, valuePerVisitor }) {
+  const issueDescriptions = {
+    missing_title: "Missing or weak title tags on key pages",
+    missing_meta: "Missing meta descriptions across pages",
+    missing_h1: "Missing H1 headings on key pages",
+    canonical_issues: "Canonical tag errors causing duplicate content",
+    non_indexable: "Pages blocked from Google's index",
+    slow_speed: "Slow page load speed",
+    thin_content: "Thin content pages with low word count",
+  };
+
+  const systemPrompt = `You are a trusted business advisor speaking to a ${market} business owner with ZERO technical knowledge. They only care about money.
+Rules:
+- NEVER use: SEO, canonical, meta, H1, crawl, index, algorithm, SERP, backlink, schema, hreflang
+- Always use ${symbol} for money
+- Be like a trusted accountant — not a salesperson
+- ${market === "UK" ? "UK tone: measured, honest, professional. Use: high street, till, fortnight" : "US tone: direct, confident, action-oriented. Use: storefront, checkout"}
+Return ONLY valid JSON:
+{"headline":"string (max 10 words)","explanation":"string (relatable metaphor, 2 sentences)","moneyImpact":"string (exact figure in ${symbol})","fix":["step 1","step 2","step 3"],"urgency":"critical|high|medium"}`;
+
+  const userPrompt = `Market: ${market} | Currency: ${symbol}
+Business type: ${industry}
+Issue: ${issueDescriptions[issueId] || issueId}
+Monthly loss: ${symbol}${min} – ${symbol}${max}
+Value per visitor: ${symbol}${valuePerVisitor}`;
+
+  const raw = await callOpenAI("gpt-4o-mini", systemPrompt, userPrompt);
+  if (!raw) return null;
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
+  console.log(`[money engine] starting for snapshot=${snapshotId}`);
+
+  // 1. Market + industry detection
+  const { market, currency, symbol } = detectMarket(seedUrl);
+  const industry = classifyIndustry(summaryState.page_type_counts, summaryState.site_type, seedUrl);
+  console.log(`[money engine] market=${market} industry=${industry}`);
+
+  // 2. Safe browsing check
+  const isThreat = await safeBrowsingCheck(seedUrl);
+  if (isThreat) console.warn(`[money engine] SAFE BROWSING THREAT detected for ${seedUrl}`);
+
+  // 3. Indexed page count via Custom Search
+  const indexedPages = await getIndexedPageCount(seedUrl);
+  console.log(`[money engine] indexedPages=${indexedPages}`);
+
+  // 4. Get PSI score from DB for this snapshot
+  let psiMobile = null;
+  try {
+    const { data: psiRows } = await supabase
+      .from("scc_page_snapshot_metrics")
+      .select("performance_score_mobile")
+      .eq("snapshot_id", snapshotId)
+      .not("performance_score_mobile", "is", null)
+      .order("performance_score_mobile", { ascending: true })
+      .limit(1);
+    if (psiRows && psiRows.length > 0) psiMobile = psiRows[0].performance_score_mobile;
+  } catch (e) {
+    console.warn("[money engine] psi fetch failed:", e.message);
+  }
+
+  // 5. Calculate money impact
+  const money = calculateMoneyImpact({
+    market,
+    industry,
+    issues: summaryState.issues,
+    psiMobile,
+    indexedPages,
+    summaryState,
+  });
+
+  // 6. Get business name from DB
+  let businessName = null;
+  try {
+    const { data: siteRow } = await supabase.from("scc_sites").select("name, url").eq("id", siteId).single();
+    businessName = siteRow?.name || siteRow?.url || seedUrl;
+  } catch {}
+
+  // 7. Generate executive summary
+  const execSummary = await generateExecutiveSummary({
+    market, symbol, businessName,
+    issueCount: money.issueResults.length,
+    totalMin: money.totalMonthlyLossMin,
+    totalMax: money.totalMonthlyLossMax,
+    psiScore: psiMobile,
+    indexedPages,
+    industry,
+  });
+
+  // 8. Update snapshot with money data
+  const confidenceScore = indexedPages ? 55 : 40;
+  await supabase.from("scc_snapshots").update({
+    market,
+    currency,
+    currency_symbol: symbol,
+    business_type: summaryState.site_type,
+    business_name: businessName,
+    industry,
+    value_per_visitor: money.valuePerVisitor,
+    estimated_monthly_traffic: money.estimatedMonthlyClicks,
+    total_monthly_loss_min: money.totalMonthlyLossMin,
+    total_monthly_loss_max: money.totalMonthlyLossMax,
+    safe_browsing_threat: isThreat,
+    indexed_page_count: indexedPages,
+    executive_summary: execSummary,
+    confidence_score: confidenceScore,
+  }).eq("id", snapshotId);
+
+  // 9. Generate narratives for top 5 issues and update existing actions
+  const top5 = money.issueResults.slice(0, 5);
+  await Promise.all(
+    top5.map(async (issue) => {
+      const narrative = await generateIssueNarrative({ ...issue, market, symbol, industry, valuePerVisitor: money.valuePerVisitor });
+      if (!narrative) return;
+
+      // Update matching site-wide action if it exists
+      await supabase.from("scc_actions")
+        .update({
+          money_loss_min: issue.min,
+          money_loss_max: issue.max,
+          fix_difficulty: issue.fixDifficulty,
+          fix_time_minutes: issue.fixTimeMinutes,
+          urgency: narrative.urgency,
+          title: narrative.headline || undefined,
+          summary: narrative.explanation || undefined,
+          expected_impact_range: narrative.moneyImpact || undefined,
+          steps: narrative.fix || undefined,
+        })
+        .eq("snapshot_id", snapshotId)
+        .ilike("title", `%${issue.issueId.replace(/_/g, " ").split(" ")[0]}%`);
+    })
+  );
+
+  console.log(`[money engine] done. loss=${symbol}${money.totalMonthlyLossMin}-${symbol}${money.totalMonthlyLossMax} confidence=${confidenceScore}%`);
+}
 
 async function rescueStaleJobs() {
   try {
