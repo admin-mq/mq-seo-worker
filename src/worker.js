@@ -1471,6 +1471,231 @@ async function updateSnapshotSummary(snapshotId, summaryJson) {
   }
 }
 
+// ─── HTTP fetch ──────────────────────────────────────────────────────────────
+
+async function fetchHtml(url) {
+  const startMs = Date.now();
+
+  const response = await axios.get(url, {
+    timeout: REQUEST_TIMEOUT_MS,
+    maxRedirects: MAX_REDIRECTS,
+    headers: { "User-Agent": USER_AGENT },
+    responseType: "text",
+    validateStatus: () => true, // never throw on 4xx / 5xx
+    decompress: true,
+  });
+
+  const loadMs = Date.now() - startMs;
+
+  // In Node.js, axios exposes the final URL (after redirects) here:
+  const finalUrl =
+    response.request?.res?.responseUrl ||
+    response.request?.responseURL ||
+    url;
+
+  return {
+    finalUrl,
+    html: typeof response.data === "string" ? response.data : "",
+    status: response.status,
+    contentType: response.headers["content-type"] || "",
+    loadMs,
+  };
+}
+
+// ─── HTML extraction ─────────────────────────────────────────────────────────
+
+function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedUrl) {
+  const $ = cheerio.load(html || "");
+
+  const title = cleanText($("title").first().text() || "");
+  const metaDescription = cleanText(
+    $('meta[name="description"]').attr("content") || ""
+  );
+  const canonicalUrl = $('link[rel="canonical"]').attr("href") || null;
+
+  const h1Elements = $("h1");
+  const h1Count = h1Elements.length;
+  const h1Text = cleanText(h1Elements.first().text() || "");
+
+  const robotsMeta = $('meta[name="robots"]').attr("content") || null;
+  const noindex = robotsMeta ? /noindex/i.test(robotsMeta) : false;
+  const indexable = statusCode >= 200 && statusCode < 300 && !noindex;
+
+  const schemaTypes = detectSchemaTypes($);
+
+  const bodyText = cleanText($("body").text() || "");
+  const wordCount = countWords(bodyText);
+
+  const pageType = classifyPageTypeFromSignals({
+    url,
+    title,
+    h1Text,
+    bodyText: bodyText.slice(0, 2000),
+    schemaTypes,
+  });
+
+  // Collect unique internal links
+  const internalLinks = [];
+  const seenLinks = new Set();
+
+  $("a[href]").each((_, el) => {
+    const href = $(el).attr("href") || "";
+    const resolved = safeUrl(href, url);
+    if (!resolved) return;
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return;
+    if (!sameHost(resolved.toString(), seedUrl)) return;
+    const normalized = normalizeUrl(resolved.toString());
+    if (!normalized || seenLinks.has(normalized)) return;
+    seenLinks.add(normalized);
+    internalLinks.push({
+      url: normalized,
+      anchorText: cleanText($(el).text() || ""),
+    });
+  });
+
+  return {
+    title,
+    metaDescription,
+    canonicalUrl,
+    h1Count,
+    h1Text,
+    wordCount,
+    robotsMeta,
+    noindex,
+    indexable,
+    schemaTypes,
+    pageType,
+    internalLinks,
+    statusCode,
+    contentType,
+    loadMs,
+  };
+}
+
+// ─── Canonical validation ────────────────────────────────────────────────────
+
+function evaluateCanonicalOk(finalUrl, canonicalUrl) {
+  // No canonical tag is not inherently wrong
+  if (!canonicalUrl) return true;
+
+  const normalFinal = normalizeUrl(finalUrl) || finalUrl;
+  const normalCanonical = normalizeUrl(canonicalUrl) || canonicalUrl;
+  return normalFinal === normalCanonical;
+}
+
+// ─── Database helpers ────────────────────────────────────────────────────────
+
+async function getOrCreatePage({ siteId, url, pageType }) {
+  // Try existing first
+  const { data: existing } = await supabase
+    .from("scc_pages")
+    .select("id")
+    .eq("site_id", siteId)
+    .eq("url", url)
+    .maybeSingle();
+
+  if (existing?.id) {
+    await supabase
+      .from("scc_pages")
+      .update({ page_type: pageType, last_seen_at: nowIso() })
+      .eq("id", existing.id);
+    return existing.id;
+  }
+
+  const { data, error } = await supabase
+    .from("scc_pages")
+    .insert({
+      site_id: siteId,
+      url,
+      page_type: pageType,
+      first_seen_at: nowIso(),
+      last_seen_at: nowIso(),
+    })
+    .select("id")
+    .single();
+
+  if (error) throw new Error(`getOrCreatePage failed: ${error.message}`);
+  return data.id;
+}
+
+async function upsertPageSnapshotCrawl({ snapshotId, pageId, crawlRow }) {
+  const { error } = await supabase
+    .from("scc_page_snapshot_crawl")
+    .upsert(
+      { snapshot_id: snapshotId, page_id: pageId, ...crawlRow },
+      { onConflict: "snapshot_id,page_id" }
+    );
+
+  if (error) {
+    console.error(`[upsertPageSnapshotCrawl] page=${pageId}`, error.message);
+  }
+}
+
+async function upsertPageSnapshotMetrics({ snapshotId, pageId, metricsRow }) {
+  const { error } = await supabase
+    .from("scc_page_snapshot_metrics")
+    .upsert(
+      { snapshot_id: snapshotId, page_id: pageId, ...metricsRow },
+      { onConflict: "snapshot_id,page_id" }
+    );
+
+  if (error) {
+    console.error(`[upsertPageSnapshotMetrics] page=${pageId}`, error.message);
+  }
+}
+
+async function replaceActions({ snapshotId, pageId, actions }) {
+  // Clear previous actions for this page in this snapshot
+  const { error: deleteError } = await supabase
+    .from("scc_actions")
+    .delete()
+    .eq("snapshot_id", snapshotId)
+    .eq("page_id", pageId);
+
+  if (deleteError) {
+    console.error(`[replaceActions delete] page=${pageId}`, deleteError.message);
+    return;
+  }
+
+  if (!actions.length) return;
+
+  const rows = actions.map((action) => ({
+    snapshot_id:           snapshotId,
+    page_id:               pageId,
+    action_type:           action.action_type,
+    title:                 action.title,
+    summary:               action.summary,
+    why_it_matters:        action.why_it_matters,
+    technical_reason:      action.technical_reason,
+    expected_impact_range: action.expected_impact_range,
+    steps:                 action.steps,
+    severity:              action.severity,
+    priority:              action.priority,
+    status:                "pending",
+  }));
+
+  const { error: insertError } = await supabase
+    .from("scc_actions")
+    .insert(rows);
+
+  if (insertError) {
+    console.error(`[replaceActions insert] page=${pageId}`, insertError.message);
+  }
+}
+
+async function updateJobProgress(jobId, pagesDone, errorsCount) {
+  const { error } = await supabase
+    .from("scc_crawl_jobs")
+    .update({ pages_done: pagesDone, errors_count: errorsCount })
+    .eq("id", jobId);
+
+  if (error) {
+    console.error(`[updateJobProgress] job=${jobId}`, error.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function processSinglePage({
   siteId,
   snapshotId,
