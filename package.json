@@ -11,6 +11,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.0.0",
     "axios": "^1.0.0",
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "tough-cookie": "^4.1.4"
   }
 }

@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 import * as cheerio from "cheerio";
+import { CookieJar } from "tough-cookie";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -22,9 +23,6 @@ const POLL_MS = Number(process.env.POLL_MS || 4000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS || 15000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 const RESCUE_STALE_AFTER_MIN = Number(process.env.RESCUE_STALE_AFTER_MIN || 10);
-const USER_AGENT =
-  process.env.USER_AGENT ||
-  "Mozilla/5.0 (compatible; MarketersQuestSEO/2.6; +https://marketersquest.com)";
 const MAX_REDIRECTS = Number(process.env.MAX_REDIRECTS || 5);
 
 const NON_HTML_EXTENSIONS = [
@@ -1481,21 +1479,75 @@ async function updateSnapshotSummary(snapshotId, summaryJson) {
 
 // ─── HTTP fetch ──────────────────────────────────────────────────────────────
 
-async function fetchHtml(url) {
+// One cookie jar per crawl job — persists cookies (e.g. cf_clearance) across pages
+const jobCookieJars = new Map();
+
+function getCookieJar(jobId) {
+  if (!jobCookieJars.has(jobId)) {
+    jobCookieJars.set(jobId, new CookieJar());
+  }
+  return jobCookieJars.get(jobId);
+}
+
+function deleteCookieJar(jobId) {
+  jobCookieJars.delete(jobId);
+}
+
+function buildBrowserHeaders(url, referer) {
+  const origin = (() => { try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ""; } })();
+  return {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "max-age=0",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": referer ? "same-origin" : "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Connection": "keep-alive",
+    ...(referer ? { "Referer": referer } : {}),
+    ...(origin ? { "Origin": origin } : {}),
+  };
+}
+
+async function fetchHtml(url, { jobId = null, referer = null } = {}) {
   const startMs = Date.now();
+
+  const jar = jobId ? getCookieJar(jobId) : null;
+
+  // Read cookies for this URL from the jar
+  const cookieHeader = jar ? await jar.getCookieString(url).catch(() => "") : "";
+
+  const headers = {
+    ...buildBrowserHeaders(url, referer),
+    ...(cookieHeader ? { "Cookie": cookieHeader } : {}),
+  };
 
   const response = await axios.get(url, {
     timeout: REQUEST_TIMEOUT_MS,
     maxRedirects: MAX_REDIRECTS,
-    headers: { "User-Agent": USER_AGENT },
+    headers,
     responseType: "text",
-    validateStatus: () => true, // never throw on 4xx / 5xx
+    validateStatus: () => true,
     decompress: true,
   });
 
   const loadMs = Date.now() - startMs;
 
-  // In Node.js, axios exposes the final URL (after redirects) here:
+  // Persist Set-Cookie headers into the jar
+  if (jar) {
+    const setCookies = response.headers["set-cookie"] || [];
+    const list = Array.isArray(setCookies) ? setCookies : [setCookies];
+    for (const raw of list) {
+      await jar.setCookie(raw, url).catch(() => {});
+    }
+  }
+
   const finalUrl =
     response.request?.res?.responseUrl ||
     response.request?.responseURL ||
@@ -1708,6 +1760,7 @@ async function updateJobProgress(jobId, pagesDone, errorsCount) {
 async function processSinglePage({
   siteId,
   snapshotId,
+  jobId,
   url,
   depth,
   seedUrl,
@@ -1716,8 +1769,10 @@ async function processSinglePage({
   let fetched;
   let fetchError = null;
 
+  const referer = depth > 0 ? seedUrl : null;
+
   try {
-    fetched = await fetchHtml(url);
+    fetched = await fetchHtml(url, { jobId, referer });
   } catch (err) {
     fetchError = err.message || "Unknown fetch error";
 
@@ -2238,6 +2293,7 @@ async function runCrawlJob(job) {
     const homepageResult = await processSinglePage({
       siteId,
       snapshotId,
+      jobId,
       url: seedUrl,
       depth: 0,
       seedUrl,
@@ -2263,13 +2319,14 @@ async function runCrawlJob(job) {
 
       await markSnapshotFinished(snapshotId);
       await completeJob(jobId, "completed");
+      deleteCookieJar(jobId);
       console.log(`[job done] id=${jobId} pages=${pagesDone}`);
       return;
     }
 
     let homepageLinks = homepageResult.links || [];
     try {
-      const homeFetch = await fetchHtml(seedUrl);
+      const homeFetch = await fetchHtml(seedUrl, { jobId });
       if (homeFetch.contentType.includes("text/html")) {
         const $ = cheerio.load(homeFetch.html || "");
         const navLinks = extractNavLinks($, seedUrl);
@@ -2339,6 +2396,7 @@ async function runCrawlJob(job) {
         const pageResult = await processSinglePage({
           siteId,
           snapshotId,
+          jobId,
           url: next.url,
           depth: next.depth,
           seedUrl,
@@ -2418,6 +2476,7 @@ async function runCrawlJob(job) {
     throw err;
   } finally {
     clearInterval(heartbeatTimer);
+    deleteCookieJar(jobId);
 
     const { error } = await supabase
       .from("scc_crawl_jobs")
