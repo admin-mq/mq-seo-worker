@@ -452,6 +452,14 @@ function inferSiteTypeFromHomepage(links = []) {
   return sorted[0][0];
 }
 
+function isBadHref(href) {
+  if (!href) return true;
+  const h = href.trim();
+  if (!h || h === "undefined" || h === "null" || h === "#") return true;
+  if (/^(mailto:|tel:|javascript:|data:)/i.test(h)) return true;
+  return false;
+}
+
 function extractNavLinks($, baseUrl) {
   const navSelectors = [
     "header a",
@@ -470,6 +478,7 @@ function extractNavLinks($, baseUrl) {
     $(selector).each((_, el) => {
       const href = $(el).attr("href");
       const anchorText = cleanText($(el).text() || "");
+      if (isBadHref(href)) return;
       const urlObj = safeUrl(href, baseUrl);
       if (!urlObj) return;
 
@@ -492,9 +501,7 @@ function extractInternalLinks($, pageUrl, seedUrl) {
     const href = $(el).attr("href");
     const anchorText = cleanText($(el).text() || "");
 
-    if (!href) return;
-    if (href.startsWith("#")) return;
-    if (/^(mailto:|tel:|javascript:)/i.test(href)) return;
+    if (isBadHref(href)) return;
 
     const fullUrl = safeUrl(href, pageUrl);
     if (!fullUrl) return;
@@ -1541,6 +1548,7 @@ function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedU
 
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href") || "";
+    if (isBadHref(href)) return;
     const resolved = safeUrl(href, url);
     if (!resolved) return;
     if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return;
