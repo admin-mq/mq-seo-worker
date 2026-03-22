@@ -2374,6 +2374,104 @@ async function fetchGscData(siteId, snapshotId) {
   }
 }
 
+async function fetchPsiData(snapshotId) {
+  const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+  if (!GOOGLE_API_KEY) {
+    console.log("[psi fetch] GOOGLE_API_KEY not set, skipping");
+    return;
+  }
+
+  // Get all pages for this snapshot
+  const { data: metrics, error } = await supabase
+    .from("scc_page_snapshot_metrics")
+    .select("page_id, scc_pages(url)")
+    .eq("snapshot_id", snapshotId);
+
+  if (error || !metrics?.length) {
+    console.log(`[psi fetch] no pages found for snapshot=${snapshotId}`);
+    return;
+  }
+
+  console.log(`[psi fetch] fetching PSI for ${metrics.length} pages`);
+
+  for (const m of metrics) {
+    const url = m.scc_pages?.url;
+    if (!url) continue;
+
+    try {
+      // Fetch mobile and desktop PSI in parallel
+      const [mobileRes, desktopRes] = await Promise.all([
+        axios.get("https://www.googleapis.com/pagespeedonline/v5/runPagespeed", {
+          params: { url, key: GOOGLE_API_KEY, strategy: "mobile" },
+          timeout: 30000,
+          validateStatus: () => true,
+        }).catch(() => null),
+        axios.get("https://www.googleapis.com/pagespeedonline/v5/runPagespeed", {
+          params: { url, key: GOOGLE_API_KEY, strategy: "desktop" },
+          timeout: 30000,
+          validateStatus: () => true,
+        }).catch(() => null),
+      ]);
+
+      const mobileScore = mobileRes?.data?.lighthouseResult?.categories?.performance?.score;
+      const desktopScore = desktopRes?.data?.lighthouseResult?.categories?.performance?.score;
+
+      // Extract Lighthouse lab data (from mobile run)
+      const audits = mobileRes?.data?.lighthouseResult?.audits || {};
+      const lcp  = audits["largest-contentful-paint"]?.numericValue;
+      const cls  = audits["cumulative-layout-shift"]?.numericValue;
+      const inp  = audits["interaction-to-next-paint"]?.numericValue;
+      const fcp  = audits["first-contentful-paint"]?.numericValue;
+      const ttfb = audits["time-to-first-byte"]?.numericValue;
+
+      // Extract CrUX field data (real users, from loadingExperience)
+      const fieldData = mobileRes?.data?.loadingExperience?.metrics || {};
+      const cruxLcp    = fieldData["LARGEST_CONTENTFUL_PAINT_MS"]?.percentile;
+      const cruxCls    = fieldData["CUMULATIVE_LAYOUT_SHIFT_SCORE"]?.percentile;
+      const cruxInp    = fieldData["INTERACTION_TO_NEXT_PAINT"]?.percentile;
+      const cruxFcp    = fieldData["FIRST_CONTENTFUL_PAINT_MS"]?.percentile;
+      const cruxTtfb   = fieldData["EXPERIMENTAL_TIME_TO_FIRST_BYTE"]?.percentile;
+      const cruxLcpRating = fieldData["LARGEST_CONTENTFUL_PAINT_MS"]?.category;
+      const cruxClsRating = fieldData["CUMULATIVE_LAYOUT_SHIFT_SCORE"]?.category;
+      const cruxInpRating = fieldData["INTERACTION_TO_NEXT_PAINT"]?.category;
+
+      const update = {};
+      if (mobileScore  != null) update.performance_score_mobile  = Math.round(mobileScore  * 100);
+      if (desktopScore != null) update.performance_score_desktop = Math.round(desktopScore * 100);
+      if (lcp  != null) update.lcp_ms    = Math.round(lcp);
+      if (cls  != null) update.cls_score = parseFloat(cls.toFixed(4));
+      if (inp  != null) update.inp_ms    = Math.round(inp);
+      if (fcp  != null) update.fcp_ms    = Math.round(fcp);
+      if (ttfb != null) update.ttfb_ms   = Math.round(ttfb);
+      // CrUX: CLS percentile is stored as integer x1000 by Google — normalise to decimal
+      if (cruxLcp  != null) update.crux_lcp_ms    = cruxLcp;
+      if (cruxCls  != null) update.crux_cls_score = parseFloat((cruxCls / 100).toFixed(4));
+      if (cruxInp  != null) update.crux_inp_ms    = cruxInp;
+      if (cruxFcp  != null) update.crux_fcp_ms    = cruxFcp;
+      if (cruxTtfb != null) update.crux_ttfb_ms   = cruxTtfb;
+      if (cruxLcpRating) update.crux_lcp_rating = cruxLcpRating;
+      if (cruxClsRating) update.crux_cls_rating = cruxClsRating;
+      if (cruxInpRating) update.crux_inp_rating = cruxInpRating;
+
+      if (Object.keys(update).length > 0) {
+        await supabase
+          .from("scc_page_snapshot_metrics")
+          .update(update)
+          .eq("snapshot_id", snapshotId)
+          .eq("page_id", m.page_id);
+
+        console.log(
+          `[psi fetch] ${url} mobile=${update.performance_score_mobile ?? "n/a"} desktop=${update.performance_score_desktop ?? "n/a"} lcp=${update.lcp_ms ?? "n/a"}ms`
+        );
+      }
+    } catch (err) {
+      console.warn(`[psi fetch] error for ${url}: ${err.message}`);
+    }
+  }
+
+  console.log(`[psi fetch] done for snapshot=${snapshotId}`);
+}
+
 async function markSnapshotFinished(snapshotId) {
   const { error } = await supabase
     .from("scc_snapshots")
@@ -2651,6 +2749,11 @@ async function runCrawlJob(job) {
     // Enrich with Google Search Console data if connected (non-blocking)
     fetchGscData(siteId, snapshotId).catch((err) =>
       console.warn(`[gsc fetch] skipped: ${err.message}`)
+    );
+
+    // Enrich with PageSpeed Insights + CrUX data (non-blocking)
+    fetchPsiData(snapshotId).catch((err) =>
+      console.warn(`[psi fetch] skipped: ${err.message}`)
     );
   } catch (err) {
     console.error(`[job failed] id=${jobId}`, err);
