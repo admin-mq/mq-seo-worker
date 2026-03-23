@@ -2837,15 +2837,95 @@ const BENCHMARKS = {
     service:           { convRate: 0.025, avgOrder: 400,  valuePerVisitor: 6.50 },
     default:           { convRate: 0.020, avgOrder: 250,  valuePerVisitor: 4.00 },
   },
+  // India (INR)
+  India: {
+    ecommerce:         { convRate: 0.015, avgOrder: 2500, valuePerVisitor: 37.50 },
+    saas:              { convRate: 0.030, avgOrder: 2000, valuePerVisitor: 60.00 },
+    legal:             { convRate: 0.025, avgOrder: 25000,valuePerVisitor: 625.00 },
+    "real estate":     { convRate: 0.008, avgOrder: 500000,valuePerVisitor: 4000.00 },
+    healthcare:        { convRate: 0.025, avgOrder: 3000, valuePerVisitor: 75.00 },
+    restaurant:        { convRate: 0.040, avgOrder: 600,  valuePerVisitor: 24.00 },
+    education:         { convRate: 0.020, avgOrder: 5000, valuePerVisitor: 100.00 },
+    travel:            { convRate: 0.012, avgOrder: 15000,valuePerVisitor: 180.00 },
+    service:           { convRate: 0.022, avgOrder: 5000, valuePerVisitor: 110.00 },
+    default:           { convRate: 0.018, avgOrder: 3000, valuePerVisitor: 54.00 },
+  },
+  // Australia (AUD)
+  Australia: {
+    ecommerce:         { convRate: 0.020, avgOrder: 120,  valuePerVisitor: 2.40 },
+    saas:              { convRate: 0.035, avgOrder: 120,  valuePerVisitor: 4.20 },
+    legal:             { convRate: 0.028, avgOrder: 3500, valuePerVisitor: 98.00 },
+    "real estate":     { convRate: 0.010, avgOrder: 12000,valuePerVisitor: 120.00 },
+    healthcare:        { convRate: 0.028, avgOrder: 350,  valuePerVisitor: 9.80 },
+    "home services":   { convRate: 0.038, avgOrder: 450,  valuePerVisitor: 17.10 },
+    restaurant:        { convRate: 0.042, avgOrder: 60,   valuePerVisitor: 2.52 },
+    education:         { convRate: 0.020, avgOrder: 500,  valuePerVisitor: 10.00 },
+    travel:            { convRate: 0.015, avgOrder: 1200, valuePerVisitor: 18.00 },
+    service:           { convRate: 0.025, avgOrder: 600,  valuePerVisitor: 15.00 },
+    default:           { convRate: 0.020, avgOrder: 400,  valuePerVisitor: 8.00 },
+  },
+  // Canada (CAD)
+  Canada: {
+    ecommerce:         { convRate: 0.020, avgOrder: 95,   valuePerVisitor: 1.90 },
+    saas:              { convRate: 0.035, avgOrder: 110,  valuePerVisitor: 3.85 },
+    legal:             { convRate: 0.028, avgOrder: 3000, valuePerVisitor: 84.00 },
+    "real estate":     { convRate: 0.010, avgOrder: 10000,valuePerVisitor: 100.00 },
+    healthcare:        { convRate: 0.028, avgOrder: 300,  valuePerVisitor: 8.40 },
+    restaurant:        { convRate: 0.042, avgOrder: 50,   valuePerVisitor: 2.10 },
+    education:         { convRate: 0.020, avgOrder: 450,  valuePerVisitor: 9.00 },
+    service:           { convRate: 0.025, avgOrder: 550,  valuePerVisitor: 13.75 },
+    default:           { convRate: 0.020, avgOrder: 350,  valuePerVisitor: 7.00 },
+  },
+  // Europe (EUR)
+  Europe: {
+    ecommerce:         { convRate: 0.018, avgOrder: 75,   valuePerVisitor: 1.35 },
+    saas:              { convRate: 0.032, avgOrder: 90,   valuePerVisitor: 2.88 },
+    legal:             { convRate: 0.028, avgOrder: 2200, valuePerVisitor: 61.60 },
+    "real estate":     { convRate: 0.010, avgOrder: 7000, valuePerVisitor: 70.00 },
+    healthcare:        { convRate: 0.026, avgOrder: 220,  valuePerVisitor: 5.72 },
+    restaurant:        { convRate: 0.040, avgOrder: 40,   valuePerVisitor: 1.60 },
+    education:         { convRate: 0.020, avgOrder: 350,  valuePerVisitor: 7.00 },
+    travel:            { convRate: 0.015, avgOrder: 700,  valuePerVisitor: 10.50 },
+    service:           { convRate: 0.022, avgOrder: 450,  valuePerVisitor: 9.90 },
+    default:           { convRate: 0.018, avgOrder: 280,  valuePerVisitor: 5.00 },
+  },
 };
 
 function detectMarket(seedUrl) {
   try {
     const url = new URL(seedUrl.startsWith("http") ? seedUrl : `https://${seedUrl}`);
     const h = url.hostname.toLowerCase();
-    if (h.endsWith(".co.uk") || h.endsWith(".org.uk") || h.endsWith(".me.uk") || h.endsWith(".uk")) {
+    // UK
+    if (h.endsWith(".co.uk") || h.endsWith(".org.uk") || h.endsWith(".me.uk") || h.endsWith(".uk"))
       return { market: "UK", currency: "GBP", symbol: "£", confidence: 90 };
-    }
+    // India
+    if (h.endsWith(".in") || h.endsWith(".co.in") || h.endsWith(".ind.in"))
+      return { market: "India", currency: "INR", symbol: "₹", confidence: 85 };
+    // Australia
+    if (h.endsWith(".com.au") || h.endsWith(".net.au") || h.endsWith(".org.au") || h.endsWith(".au"))
+      return { market: "Australia", currency: "AUD", symbol: "A$", confidence: 88 };
+    // Canada
+    if (h.endsWith(".ca"))
+      return { market: "Canada", currency: "CAD", symbol: "C$", confidence: 85 };
+    // Germany
+    if (h.endsWith(".de"))
+      return { market: "Europe", currency: "EUR", symbol: "€", confidence: 85 };
+    // France
+    if (h.endsWith(".fr"))
+      return { market: "Europe", currency: "EUR", symbol: "€", confidence: 85 };
+    // Europe
+    if (h.endsWith(".eu") || h.endsWith(".es") || h.endsWith(".it") || h.endsWith(".nl") || h.endsWith(".be") || h.endsWith(".pl") || h.endsWith(".se") || h.endsWith(".no") || h.endsWith(".dk") || h.endsWith(".fi") || h.endsWith(".at") || h.endsWith(".ch") || h.endsWith(".pt"))
+      return { market: "Europe", currency: "EUR", symbol: "€", confidence: 80 };
+    // New Zealand
+    if (h.endsWith(".co.nz") || h.endsWith(".nz"))
+      return { market: "Australia", currency: "AUD", symbol: "A$", confidence: 75 };
+    // South Africa
+    if (h.endsWith(".co.za") || h.endsWith(".za"))
+      return { market: "US", currency: "ZAR", symbol: "R", confidence: 75 };
+    // Singapore / Malaysia / Hong Kong - use USD as proxy
+    if (h.endsWith(".sg") || h.endsWith(".com.sg") || h.endsWith(".com.my") || h.endsWith(".hk"))
+      return { market: "US", currency: "USD", symbol: "$", confidence: 65 };
+    // Default: US
     return { market: "US", currency: "USD", symbol: "$", confidence: 60 };
   } catch {
     return { market: "US", currency: "USD", symbol: "$", confidence: 40 };
@@ -2927,7 +3007,7 @@ function getSiteHealthCTRPosition(issues) {
 }
 
 function calculateMoneyImpact({ market, industry, issues, psiMobile, indexedPages, summaryState }) {
-  const benchmark = BENCHMARKS[market]?.[industry] || BENCHMARKS[market]?.default || BENCHMARKS.US.default;
+  const benchmark = BENCHMARKS[market]?.[industry] || BENCHMARKS[market]?.default || BENCHMARKS.US[industry] || BENCHMARKS.US.default;
   const valuePerVisitor = benchmark.valuePerVisitor;
 
   const effectiveIndexed = indexedPages || Math.max(summaryState.pages_crawled * 3, 5);
@@ -2996,11 +3076,31 @@ function calculateMoneyImpact({ market, industry, issues, psiMobile, indexedPage
     if (loss > 0) issueResults.push({ issueId: "thin_content", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "medium", fixTimeMinutes: 120 });
   }
 
+  // Content gap losses — missing pages that cost traffic
+  const hasPricingPage = Object.keys(issues.page_type_counts || {}).includes("pricing");
+  const hasBlog = Object.keys(issues.page_type_counts || {}).includes("article") ||
+                  Object.keys(issues.page_type_counts || {}).includes("blog");
+  if (!hasPricingPage && (industry === "saas" || industry === "ecommerce" || industry === "service")) {
+    const loss = Math.round(estimatedMonthlyClicks * 0.15 * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "no_pricing_page", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "medium", fixTimeMinutes: 180 });
+  }
+  if (!hasBlog) {
+    const loss = Math.round(estimatedMonthlyClicks * 0.20 * valuePerVisitor);
+    if (loss > 0) issueResults.push({ issueId: "no_content_pages", loss, min: Math.round(loss * 0.6), max: Math.round(loss * 1.2), fixDifficulty: "medium", fixTimeMinutes: 300 });
+  }
+
   issueResults.sort((a, b) => b.loss - a.loss);
 
-  const totalLossRaw = issueResults.reduce((sum, i) => sum + i.loss, 0);
-  const totalMin = Math.round(totalLossRaw * 0.6);
-  const totalMax = Math.round(totalLossRaw * 1.2);
+  let totalLossRaw = issueResults.reduce((sum, i) => sum + i.loss, 0);
+
+  // Guarantee a minimum — even perfect sites have opportunity value from estimated traffic
+  // Baseline = 25-50% of monthly traffic value (what they'd earn if they captured more search)
+  const baselineMin = Math.round(estimatedMonthlyClicks * valuePerVisitor * 0.25);
+  const baselineMax = Math.round(estimatedMonthlyClicks * valuePerVisitor * 0.50);
+  if (totalLossRaw < baselineMin) totalLossRaw = baselineMin;
+
+  const totalMin = Math.max(Math.round(totalLossRaw * 0.6), baselineMin);
+  const totalMax = Math.max(Math.round(totalLossRaw * 1.2), baselineMax);
 
   return {
     valuePerVisitor,
