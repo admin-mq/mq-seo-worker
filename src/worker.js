@@ -1726,7 +1726,10 @@ function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedU
 
   const schemaTypes = detectSchemaTypes($);
 
-  const bodyText = cleanText($("body").text() || "");
+  // Remove script/style/noscript before extracting text so NL API gets clean prose
+  const $body = $("body").clone();
+  $body.find("script, style, noscript, [aria-hidden='true']").remove();
+  const bodyText = cleanText($body.text() || "");
   const wordCount = countWords(bodyText);
   const locationSignals = extractLocationSignals(bodyText);
   const bodyTextSnippet = bodyText.slice(0, 5000);
