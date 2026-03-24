@@ -2475,6 +2475,8 @@ async function processSinglePage({
       wordCount: extracted.wordCount,
       loadMs: extracted.loadMs,
       internalLinkDepth: depth,
+      locationSignals: extracted.locationSignals,
+      bodyTextSnippet: extracted.bodyTextSnippet,
     });
   }
 
