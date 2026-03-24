@@ -580,7 +580,135 @@ function createSnapshotSummaryState(seedUrl) {
       deep_pages: 0,
     },
     top_opportunity_pages: [],
+    // Location signals accumulated across all crawled pages
+    location_signals: {
+      uk_phones: 0,
+      us_phones: 0,
+      au_phones: 0,
+      uk_postcodes: 0,
+      us_zipcodes: 0,
+      au_postcodes: 0,
+      gbp_mentions: 0,
+      usd_mentions: 0,
+      eur_mentions: 0,
+      aud_mentions: 0,
+      uk_country: 0,
+      us_country: 0,
+      au_country: 0,
+      eu_country: 0,
+      ca_country: 0,
+      in_country: 0,
+    },
   };
+}
+
+/**
+ * Extract market/location signals from a page's body text.
+ * Returns counts of various signals that indicate which country the business is in.
+ */
+function extractLocationSignals(text) {
+  const t = text || "";
+  const signals = {
+    uk_phones: 0, us_phones: 0, au_phones: 0,
+    uk_postcodes: 0, us_zipcodes: 0, au_postcodes: 0,
+    gbp_mentions: 0, usd_mentions: 0, eur_mentions: 0, aud_mentions: 0,
+    uk_country: 0, us_country: 0, au_country: 0, eu_country: 0,
+    ca_country: 0, in_country: 0,
+  };
+
+  // UK phone numbers: +44, 07xxx, 01xxx, 02xxx, 08xx, 03xx
+  signals.uk_phones = (t.match(/(\+44|0(?:7\d{3}|\d{3,4})\s?\d{3,4}\s?\d{3,4})/g) || []).length;
+
+  // US/Canada phone numbers: +1, (xxx) xxx-xxxx, xxx-xxx-xxxx
+  signals.us_phones = (t.match(/(\+1[\s-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}/g) || []).length;
+
+  // Australian phone numbers: +61, 04xx, (0x) xxxx xxxx
+  signals.au_phones = (t.match(/(\+61|0[45]\d{2}[\s-]?\d{3}[\s-]?\d{3})/g) || []).length;
+
+  // UK postcodes: e.g. SW1A 2AA, EC1A 1BB, W1D 6LT
+  signals.uk_postcodes = (t.match(/\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/g) || []).length;
+
+  // US zip codes: 5 digits, or 5+4
+  signals.us_zipcodes = (t.match(/\b\d{5}(?:-\d{4})?\b/g) || []).length;
+
+  // Australian postcodes: 4 digits (less reliable, only count if combined with other AU signals)
+  signals.au_postcodes = (t.match(/\bAustralia\b.*?\b\d{4}\b|\b\d{4}\b.*?\bAustralia\b/gi) || []).length;
+
+  // Currency symbols in context of prices
+  signals.gbp_mentions = (t.match(/£\s*[\d,]+/g) || []).length;
+  signals.usd_mentions = (t.match(/\$\s*[\d,]+/g) || []).length;
+  signals.eur_mentions = (t.match(/€\s*[\d,]+/g) || []).length;
+  signals.aud_mentions = (t.match(/A\$\s*[\d,]+/gi) || []).length;
+
+  // Country/region mentions (case-insensitive)
+  signals.uk_country = (t.match(/\b(United Kingdom|UK|England|Scotland|Wales|Britain|British|London|Manchester|Birmingham|Edinburgh|Glasgow|Bristol|Leeds|Liverpool|Sheffield)\b/gi) || []).length;
+  signals.us_country = (t.match(/\b(United States|USA|U\.S\.A|America|American|New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Francisco|Seattle|Boston|Denver)\b/gi) || []).length;
+  signals.au_country = (t.match(/\b(Australia|Australian|Sydney|Melbourne|Brisbane|Perth|Adelaide)\b/gi) || []).length;
+  signals.eu_country = (t.match(/\b(Germany|France|Spain|Italy|Netherlands|Belgium|Poland|Sweden|Norway|Denmark|Finland|Austria|Switzerland|Portugal|European Union|EU)\b/gi) || []).length;
+  signals.ca_country = (t.match(/\b(Canada|Canadian|Toronto|Vancouver|Montreal|Calgary|Ottawa)\b/gi) || []).length;
+  signals.in_country = (t.match(/\b(India|Indian|Mumbai|Delhi|Bangalore|Hyderabad|Chennai|Kolkata|Pune)\b/gi) || []).length;
+
+  return signals;
+}
+
+/**
+ * Determine market from accumulated location signals across all crawled pages,
+ * with TLD-based detection as a fallback/tiebreaker.
+ */
+function detectMarketFromSignals(locationSignals, seedUrl) {
+  const s = locationSignals || {};
+
+  // Score each market (higher = more likely)
+  const scores = {
+    UK: 0, US: 0, Australia: 0, Europe: 0, Canada: 0, India: 0,
+  };
+
+  // Phone numbers (strong signal)
+  scores.UK  += (s.uk_phones  || 0) * 4;
+  scores.US  += (s.us_phones  || 0) * 3; // US phones overlap with CA
+  scores.Australia += (s.au_phones || 0) * 4;
+
+  // Postcodes/zip codes (very strong signal)
+  scores.UK  += (s.uk_postcodes || 0) * 6;
+  scores.US  += (s.us_zipcodes  || 0) * 2; // 5-digit numbers appear a lot, lower weight
+  scores.Australia += (s.au_postcodes || 0) * 5;
+
+  // Currency in prices (strong signal)
+  scores.UK      += (s.gbp_mentions || 0) * 5;
+  scores.US      += (s.usd_mentions || 0) * 3;
+  scores.Europe  += (s.eur_mentions || 0) * 5;
+  scores.Australia += (s.aud_mentions || 0) * 5;
+
+  // Country/city name mentions
+  scores.UK      += (s.uk_country  || 0) * 3;
+  scores.US      += (s.us_country  || 0) * 3;
+  scores.Australia += (s.au_country || 0) * 3;
+  scores.Europe  += (s.eu_country  || 0) * 3;
+  scores.Canada  += (s.ca_country  || 0) * 3;
+  scores.India   += (s.in_country  || 0) * 3;
+
+  // Find highest scoring market
+  const topMarket = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+  const topScore = topMarket[1];
+  const topName  = topMarket[0];
+
+  // Only trust content signals if we have meaningful evidence (score >= 8)
+  if (topScore >= 8) {
+    const marketMap = {
+      UK:        { market: "UK",        currency: "GBP", symbol: "£",  confidence: 85 },
+      US:        { market: "US",        currency: "USD", symbol: "$",  confidence: 80 },
+      Australia: { market: "Australia", currency: "AUD", symbol: "A$", confidence: 85 },
+      Europe:    { market: "Europe",    currency: "EUR", symbol: "€",  confidence: 82 },
+      Canada:    { market: "Canada",    currency: "CAD", symbol: "C$", confidence: 80 },
+      India:     { market: "India",     currency: "INR", symbol: "₹",  confidence: 80 },
+    };
+    console.log(`[market detect] content signals → ${topName} (score=${topScore}) signals=${JSON.stringify(scores)}`);
+    return marketMap[topName] || detectMarket(seedUrl);
+  }
+
+  // Not enough content signals — fall back to TLD
+  console.log(`[market detect] low content signal (top=${topName} score=${topScore}), falling back to TLD`);
+  return detectMarket(seedUrl);
 }
 
 function incrementCount(map, key) {
@@ -634,6 +762,15 @@ function registerSummaryPage(summaryState, pageSummary) {
 
   summaryState.top_opportunity_pages.sort((a, b) => b.opportunity - a.opportunity);
   summaryState.top_opportunity_pages = summaryState.top_opportunity_pages.slice(0, 5);
+
+  // Accumulate location signals from this page
+  if (pageSummary.locationSignals && summaryState.location_signals) {
+    const src = pageSummary.locationSignals;
+    const dst = summaryState.location_signals;
+    for (const key of Object.keys(dst)) {
+      dst[key] = (dst[key] || 0) + (src[key] || 0);
+    }
+  }
 }
 
 function getContentMixTargets(maxPages) {
@@ -1585,6 +1722,7 @@ function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedU
 
   const bodyText = cleanText($("body").text() || "");
   const wordCount = countWords(bodyText);
+  const locationSignals = extractLocationSignals(bodyText);
 
   const pageType = classifyPageTypeFromSignals({
     url,
@@ -1630,6 +1768,7 @@ function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedU
     statusCode,
     contentType,
     loadMs,
+    locationSignals,
   };
 }
 
@@ -3197,10 +3336,10 @@ Value per visitor: ${symbol}${valuePerVisitor}`;
 async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   console.log(`[money engine] starting for snapshot=${snapshotId}`);
 
-  // 1. Market + industry detection
-  const { market, currency, symbol } = detectMarket(seedUrl);
+  // 1. Market + industry detection — use content signals first, TLD as fallback
+  const { market, currency, symbol } = detectMarketFromSignals(summaryState.location_signals, seedUrl);
   const industry = classifyIndustry(summaryState.page_type_counts, summaryState.site_type, seedUrl);
-  console.log(`[money engine] market=${market} industry=${industry}`);
+  console.log(`[money engine] market=${market} industry=${industry} signals=${JSON.stringify(summaryState.location_signals)}`);
 
   // 2. Safe browsing check
   const isThreat = await safeBrowsingCheck(seedUrl);
