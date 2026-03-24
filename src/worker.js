@@ -3186,20 +3186,21 @@ function extractLocationsFromEntities(entities) {
 async function safeBrowsingCheck(url) {
   if (!GOOGLE_API_KEY_MONEY) return false;
   try {
-    const res = await axios.post(
-      `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${GOOGLE_API_KEY_MONEY}`,
+    // Use Web Risk API (v1) — replaces deprecated Safe Browsing API v4
+    const res = await axios.get(
+      `https://webrisk.googleapis.com/v1/uris:search`,
       {
-        client: { clientId: "seq-marketersquest", clientVersion: "1.0" },
-        threatInfo: {
-          threatTypes: ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
-          platformTypes: ["ANY_PLATFORM"],
-          threatEntryTypes: ["URL"],
-          threatEntries: [{ url }],
+        params: {
+          key: GOOGLE_API_KEY_MONEY,
+          uri: url,
+          "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
         },
-      },
-      { timeout: 8000 }
+        timeout: 8000,
+        validateStatus: () => true,
+      }
     );
-    return !!(res.data && res.data.matches && res.data.matches.length > 0);
+    // Web Risk returns { threat: { threatTypes: [...], expireTime, uri } } if threat found
+    return !!(res.data && res.data.threat);
   } catch (e) {
     console.warn("[safe browsing] check failed:", e.message);
     return false;
