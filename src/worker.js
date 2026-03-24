@@ -580,6 +580,7 @@ function createSnapshotSummaryState(seedUrl) {
       deep_pages: 0,
     },
     top_opportunity_pages: [],
+    homepage_text_snippet: "", // body text of first page (for NL API)
     // Location signals accumulated across all crawled pages
     location_signals: {
       uk_phones: 0,
@@ -732,6 +733,11 @@ function registerSelectedPage(queueState, pageType, familyKey) {
 function registerSummaryPage(summaryState, pageSummary) {
   summaryState.pages_crawled += 1;
   incrementCount(summaryState.page_type_counts, pageSummary.pageType);
+
+  // Capture homepage body text for Natural Language API (first page only)
+  if (summaryState.pages_crawled === 1 && pageSummary.bodyTextSnippet) {
+    summaryState.homepage_text_snippet = pageSummary.bodyTextSnippet;
+  }
 
   summaryState.score_lists.structural.push(pageSummary.structuralScore);
   summaryState.score_lists.visibility.push(pageSummary.visibilityScore);
@@ -1723,6 +1729,7 @@ function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedU
   const bodyText = cleanText($("body").text() || "");
   const wordCount = countWords(bodyText);
   const locationSignals = extractLocationSignals(bodyText);
+  const bodyTextSnippet = bodyText.slice(0, 5000);
 
   const pageType = classifyPageTypeFromSignals({
     url,
@@ -1769,6 +1776,7 @@ function extractSeoData(html, url, statusCode, contentType, loadMs, depth, seedU
     contentType,
     loadMs,
     locationSignals,
+    bodyTextSnippet,
   };
 }
 
@@ -3097,6 +3105,79 @@ function classifyIndustry(pageTypeCounts, siteType, seedUrl) {
   return "service";
 }
 
+// ─── Google Natural Language API ─────────────────────────────────────────────
+
+async function callNaturalLanguageAPI(text) {
+  if (!GOOGLE_API_KEY_MONEY) return null;
+  const content = (text || "").trim();
+  if (content.length < 100) return null;
+  try {
+    const res = await axios.post(
+      `https://language.googleapis.com/v1/documents:annotateText?key=${GOOGLE_API_KEY_MONEY}`,
+      {
+        document: { type: "PLAIN_TEXT", content: content.slice(0, 5000) },
+        features: {
+          classifyText: content.length >= 250, // min length required
+          extractEntities: true,
+          extractDocumentSentiment: true,
+        },
+        encodingType: "UTF8",
+      },
+      { timeout: 10000 }
+    );
+    return res.data;
+  } catch (e) {
+    console.warn("[nl api] failed:", e.message);
+    return null;
+  }
+}
+
+/**
+ * Map Google NL IAB categories → our industry keys
+ */
+function mapNLCategoriesToIndustry(categories) {
+  if (!categories || !categories.length) return null;
+  const top = [...categories].sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+  const name = (top.name || "").toLowerCase();
+
+  if (/restaurant|food & drink|dining|cafe|bakery|bar & nightlife|pub/.test(name)) return "restaurant";
+  if (/software|saas|internet & telecom|computers|technology/.test(name)) return "saas";
+  if (/shop|retail|apparel|e-commerce|consumer electronics|gifts/.test(name)) return "ecommerce";
+  if (/law|legal|attorney|courts|paralegal/.test(name)) return "legal";
+  if (/health|medical|pharmacy|dental|fitness|wellness/.test(name)) return "healthcare";
+  if (/real estate|property|homes for sale|mortgage/.test(name)) return "real estate";
+  if (/finance|insurance|banking|investing|accounting/.test(name)) return "financial";
+  if (/hotel|travel|tourism|vacation|flights|accommodation/.test(name)) return "travel";
+  if (/education|school|university|college|training|learning/.test(name)) return "education";
+  if (/beauty|salon|spa|hair|cosmetics/.test(name)) return "beauty";
+  if (/automotive|car|vehicle|auto parts/.test(name)) return "auto";
+  if (/home & garden|construction|plumbing|roofing|cleaning/.test(name)) return "home services";
+  if (/business & industrial|b2b|manufacturing|wholesale/.test(name)) return "service";
+  return null;
+}
+
+/**
+ * Extract the most prominent organisation name from NL entities
+ */
+function extractBusinessNameFromEntities(entities) {
+  if (!entities || !entities.length) return null;
+  const orgs = entities
+    .filter((e) => e.type === "ORGANIZATION" && (e.salience || 0) > 0.01)
+    .sort((a, b) => (b.salience || 0) - (a.salience || 0));
+  return orgs.length ? orgs[0].name : null;
+}
+
+/**
+ * Extract location entities to further boost market detection
+ */
+function extractLocationsFromEntities(entities) {
+  if (!entities || !entities.length) return [];
+  return entities
+    .filter((e) => e.type === "LOCATION" && (e.salience || 0) > 0.01)
+    .sort((a, b) => (b.salience || 0) - (a.salience || 0))
+    .map((e) => e.name);
+}
+
 async function safeBrowsingCheck(url) {
   if (!GOOGLE_API_KEY_MONEY) return false;
   try {
@@ -3336,10 +3417,39 @@ Value per visitor: ${symbol}${valuePerVisitor}`;
 async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   console.log(`[money engine] starting for snapshot=${snapshotId}`);
 
-  // 1. Market + industry detection — use content signals first, TLD as fallback
+  // 1a. Google Natural Language API — classify industry + extract entities from homepage
+  let nlResult = null;
+  let nlIndustry = null;
+  let nlBusinessName = null;
+  let nlLocations = [];
+  if (summaryState.homepage_text_snippet) {
+    nlResult = await callNaturalLanguageAPI(summaryState.homepage_text_snippet);
+    if (nlResult) {
+      nlIndustry = mapNLCategoriesToIndustry(nlResult.categories);
+      nlBusinessName = extractBusinessNameFromEntities(nlResult.entities);
+      nlLocations = extractLocationsFromEntities(nlResult.entities);
+      const sentiment = nlResult.documentSentiment;
+      console.log(`[nl api] industry=${nlIndustry} bizName=${nlBusinessName} locations=${nlLocations.join(",")} sentiment=${sentiment?.score?.toFixed(2)}`);
+    }
+  }
+
+  // 1b. Market detection — content signals + TLD fallback
+  // Boost location_signals with NL-extracted locations
+  if (nlLocations.length && summaryState.location_signals) {
+    const ukPlaces = /london|england|scotland|wales|britain|manchester|birmingham|edinburgh|glasgow|bristol|liverpool|leeds|sheffield/i;
+    const usPlaces = /new york|los angeles|chicago|houston|phoenix|dallas|san francisco|seattle|boston/i;
+    const auPlaces = /sydney|melbourne|brisbane|perth|adelaide/i;
+    for (const loc of nlLocations) {
+      if (ukPlaces.test(loc)) summaryState.location_signals.uk_country += 5;
+      else if (usPlaces.test(loc)) summaryState.location_signals.us_country += 5;
+      else if (auPlaces.test(loc)) summaryState.location_signals.au_country += 5;
+    }
+  }
+
+  // 1c. Final market + industry
   const { market, currency, symbol } = detectMarketFromSignals(summaryState.location_signals, seedUrl);
-  const industry = classifyIndustry(summaryState.page_type_counts, summaryState.site_type, seedUrl);
-  console.log(`[money engine] market=${market} industry=${industry} signals=${JSON.stringify(summaryState.location_signals)}`);
+  const industry = nlIndustry || classifyIndustry(summaryState.page_type_counts, summaryState.site_type, seedUrl);
+  console.log(`[money engine] market=${market} industry=${industry} (nl=${nlIndustry}) signals=${JSON.stringify(summaryState.location_signals)}`);
 
   // 2. Safe browsing check
   const isThreat = await safeBrowsingCheck(seedUrl);
@@ -3374,11 +3484,11 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     summaryState,
   });
 
-  // 6. Get business name from DB
-  let businessName = null;
+  // 6. Get business name — prefer NL-extracted name, then DB, then URL
+  let businessName = nlBusinessName || null;
   try {
     const { data: siteRow } = await supabase.from("scc_sites").select("name, url").eq("id", siteId).single();
-    businessName = siteRow?.name || siteRow?.url || seedUrl;
+    if (!businessName) businessName = siteRow?.name || siteRow?.url || seedUrl;
   } catch {}
 
   // 7. Generate executive summary
@@ -3428,6 +3538,18 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
       executive_summary: execSummary,
       safe_browsing_threat: isThreat,
       indexed_page_count: indexedPages,
+      business_name: businessName,
+      // NL API enrichment
+      nl_industry_raw: nlResult?.categories?.[0]?.name || null,
+      nl_sentiment_score: nlResult?.documentSentiment?.score ?? null,
+      nl_sentiment_magnitude: nlResult?.documentSentiment?.magnitude ?? null,
+      nl_top_entities: nlResult?.entities
+        ? nlResult.entities
+            .filter((e) => (e.salience || 0) > 0.02)
+            .slice(0, 8)
+            .map((e) => ({ name: e.name, type: e.type, salience: e.salience }))
+        : [],
+      nl_locations: nlLocations.slice(0, 5),
     },
   };
   await supabase.from("scc_snapshots").update({ notes: JSON.stringify(updatedNotes) }).eq("id", snapshotId);
