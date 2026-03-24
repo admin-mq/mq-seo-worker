@@ -3266,6 +3266,27 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     confidence_score: confidenceScore,
   }).eq("id", snapshotId);
 
+  // Also merge money data into notes JSON so frontend can read without schema cache issues
+  const { data: existingSnap } = await supabase.from("scc_snapshots").select("notes").eq("id", snapshotId).single();
+  const existingNotes = (() => { try { return JSON.parse(existingSnap?.notes || "{}"); } catch { return {}; } })();
+  const updatedNotes = {
+    ...existingNotes,
+    money: {
+      total_monthly_loss_min: money.totalMonthlyLossMin,
+      total_monthly_loss_max: money.totalMonthlyLossMax,
+      currency_symbol: symbol,
+      market,
+      industry,
+      value_per_visitor: money.valuePerVisitor,
+      estimated_monthly_traffic: money.estimatedMonthlyClicks,
+      confidence_score: confidenceScore,
+      executive_summary: execSummary,
+      safe_browsing_threat: isThreat,
+      indexed_page_count: indexedPages,
+    },
+  };
+  await supabase.from("scc_snapshots").update({ notes: JSON.stringify(updatedNotes) }).eq("id", snapshotId);
+
   // 9. Generate narratives for top 5 issues and update existing actions
   const top5 = money.issueResults.slice(0, 5);
   await Promise.all(
