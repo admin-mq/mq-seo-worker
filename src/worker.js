@@ -2946,7 +2946,6 @@ async function runCrawlJob(job) {
 // =============================================
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GOOGLE_CSE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
 const GOOGLE_API_KEY_MONEY = process.env.GOOGLE_API_KEY;
 
 const CTR_TABLE = {
@@ -3229,38 +3228,8 @@ async function safeBrowsingCheck(url) {
   }
 }
 
-async function getIndexedPageCount(domain, snapshotId) {
-  // Source 1: Custom Search API (site: query) — works if CSE is enabled
-  if (GOOGLE_API_KEY_MONEY && GOOGLE_CSE_ID) {
-    try {
-      const cleanDomain = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
-      const res = await axios.get("https://www.googleapis.com/customsearch/v1", {
-        params: {
-          key: GOOGLE_API_KEY_MONEY,
-          cx: GOOGLE_CSE_ID,
-          q: `site:${cleanDomain}`,
-          num: 1,
-        },
-        timeout: 8000,
-        validateStatus: () => true,
-      });
-      if (res.status === 200) {
-        const total = res.data?.searchInformation?.totalResults;
-        if (total) {
-          const count = parseInt(total, 10);
-          console.log(`[custom search] indexed pages = ${count} for ${cleanDomain}`);
-          return count;
-        }
-      } else {
-        const reason = res.data?.error?.message || `HTTP ${res.status}`;
-        console.warn(`[custom search] indexed pages failed: ${res.status} – ${reason}`);
-      }
-    } catch (e) {
-      console.warn(`[custom search] indexed pages error: ${e.message}`);
-    }
-  }
-
-  // Source 2: GSC impressions data — count pages that have appeared in Google search
+async function getIndexedPageCount(domain, snapshotId, pagesCrawled) {
+  // Source 1: GSC impressions data — most accurate, uses real Google data
   if (snapshotId) {
     try {
       const { data: gscPages } = await supabase
@@ -3269,19 +3238,24 @@ async function getIndexedPageCount(domain, snapshotId) {
         .eq("snapshot_id", snapshotId)
         .gt("impressions", 0);
       if (gscPages && gscPages.length > 0) {
-        // Pages with impressions are confirmed indexed; extrapolate for uncrawled pages
         const confirmedIndexed = gscPages.length;
-        const estimate = Math.round(confirmedIndexed * 3); // conservative multiplier
+        const estimate = Math.round(confirmedIndexed * 3);
         console.log(`[indexed pages] GSC-based estimate: ${confirmedIndexed} pages with impressions → ~${estimate} total`);
         return estimate;
       }
     } catch (e) {
-      console.warn(`[indexed pages] GSC fallback error: ${e.message}`);
+      console.warn(`[indexed pages] GSC error: ${e.message}`);
     }
   }
 
-  // Source 3: Crawl-based estimate — rough but always available
-  return null; // Caller will use crawl count as confidence signal
+  // Source 2: Crawl-based estimate — always available, rough signal
+  if (pagesCrawled && pagesCrawled > 0) {
+    const estimate = pagesCrawled * 8;
+    console.log(`[indexed pages] crawl-based estimate: ${pagesCrawled} crawled → ~${estimate} total`);
+    return estimate;
+  }
+
+  return null;
 }
 
 function getSiteHealthCTRPosition(issues) {
@@ -3534,8 +3508,8 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   const isThreat = await safeBrowsingCheck(seedUrl);
   if (isThreat) console.warn(`[money engine] SAFE BROWSING THREAT detected for ${seedUrl}`);
 
-  // 3. Indexed page count — tries Custom Search, then GSC impressions data, then null
-  const indexedPages = await getIndexedPageCount(seedUrl, snapshotId);
+  // 3. Indexed page count — GSC impressions first, then crawl-based estimate
+  const indexedPages = await getIndexedPageCount(seedUrl, snapshotId, summaryState.pages_crawled);
   console.log(`[money engine] indexedPages=${indexedPages}`);
 
   // 4. Get PSI score from DB for this snapshot
