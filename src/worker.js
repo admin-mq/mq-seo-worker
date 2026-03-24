@@ -3223,7 +3223,9 @@ async function getIndexedPageCount(domain) {
     const total = res.data?.searchInformation?.totalResults;
     return total ? parseInt(total, 10) : null;
   } catch (e) {
-    console.warn("[custom search] indexed pages failed:", e.message);
+    const status = e.response?.status;
+    const reason = e.response?.data?.error?.message || e.message;
+    console.warn(`[custom search] indexed pages failed: ${status} – ${reason}`);
     return null;
   }
 }
