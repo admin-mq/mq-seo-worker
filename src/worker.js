@@ -2742,26 +2742,24 @@ async function runCrawlJob(job) {
     await updateSnapshotSummary(snapshotId, summaryJson);
     await generateSiteWideActions(snapshotId, summaryState);
 
-    await markSnapshotFinished(snapshotId);
-    await completeJob(jobId, "completed");
-    console.log(`[job done] id=${jobId} pages=${pagesDone} errors=${errorsCount}`);
-
-    // Enrich with Google Search Console data if connected (non-blocking)
+    // Enrich with Google Search Console data (non-blocking)
     fetchGscData(siteId, snapshotId).catch((err) =>
       console.warn(`[gsc fetch] skipped: ${err.message}`)
     );
 
-    // Enrich with PageSpeed Insights + CrUX data (non-blocking)
+    // Kick off PageSpeed Insights in background (non-blocking)
     fetchPsiData(snapshotId).catch((err) =>
       console.warn(`[psi fetch] skipped: ${err.message}`)
     );
 
-    // Run money calculation engine (non-blocking, runs after PSI has a moment to land)
-    setTimeout(() => {
-      runMoneyEngine(siteId, snapshotId, seedUrl, summaryState).catch((err) =>
-        console.warn(`[money engine] skipped: ${err.message}`)
-      );
-    }, 8000);
+    // Run money engine BEFORE marking snapshot finished so notes.money is ready when frontend loads
+    await runMoneyEngine(siteId, snapshotId, seedUrl, summaryState).catch((err) =>
+      console.warn(`[money engine] skipped: ${err.message}`)
+    );
+
+    await markSnapshotFinished(snapshotId);
+    await completeJob(jobId, "completed");
+    console.log(`[job done] id=${jobId} pages=${pagesDone} errors=${errorsCount}`);
   } catch (err) {
     console.error(`[job failed] id=${jobId}`, err);
     await markSnapshotFailed(snapshotId, "worker_run", err.message || "Unknown crawl error");
