@@ -3604,28 +3604,58 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   };
   await supabase.from("scc_snapshots").update({ notes: JSON.stringify(updatedNotes) }).eq("id", snapshotId);
 
-  // 9. Generate narratives for top 5 issues and update existing actions
+  // 9. Generate AI narratives for top issues and update actions
+  // Map money engine issue IDs → scc_actions action_type values
+  const ISSUE_TO_ACTION_TYPE = {
+    missing_title:    "site_missing_titles",
+    missing_meta:     "site_missing_meta_descriptions",
+    missing_h1:       "site_missing_h1s",
+    non_indexable:    "site_non_indexable_pages",
+    thin_content:     "site_thin_content",
+    slow_speed:       "site_slow_speed",
+    canonical_issues: "site_canonical_issues",
+  };
+
   const top5 = money.issueResults.slice(0, 5);
   await Promise.all(
     top5.map(async (issue) => {
       const narrative = await generateIssueNarrative({ ...issue, market, symbol, industry, valuePerVisitor: money.valuePerVisitor, nlEntities: nlTopEntities, nlSentiment });
       if (!narrative) return;
 
-      // Update matching site-wide action if it exists
-      await supabase.from("scc_actions")
-        .update({
-          money_loss_min: issue.min,
-          money_loss_max: issue.max,
-          fix_difficulty: issue.fixDifficulty,
-          fix_time_minutes: issue.fixTimeMinutes,
-          urgency: narrative.urgency,
-          title: narrative.headline || undefined,
-          summary: narrative.explanation || undefined,
-          expected_impact_range: narrative.moneyImpact || undefined,
-          steps: narrative.fix || undefined,
-        })
-        .eq("snapshot_id", snapshotId)
-        .ilike("title", `%${issue.issueId.replace(/_/g, " ").split(" ")[0]}%`);
+      const actionType = ISSUE_TO_ACTION_TYPE[issue.issueId];
+      const updatePayload = {
+        money_loss_min: issue.min,
+        money_loss_max: issue.max,
+        fix_difficulty: issue.fixDifficulty,
+        fix_time_minutes: issue.fixTimeMinutes,
+        urgency: narrative.urgency,
+        title: narrative.headline,
+        why_it_matters: narrative.explanation,   // was wrongly 'summary'
+        expected_impact_range: narrative.moneyImpact,
+        steps: narrative.fix,
+      };
+
+      if (actionType) {
+        // Update existing site-wide action matched by action_type (exact match, not fragile ilike)
+        const { error } = await supabase.from("scc_actions")
+          .update(updatePayload)
+          .eq("snapshot_id", snapshotId)
+          .eq("action_type", actionType);
+        if (error) console.warn(`[narrative] update failed for ${actionType}:`, error.message);
+        else console.log(`[narrative] updated action_type=${actionType} headline="${narrative.headline}"`);
+      } else {
+        // No site-wide action exists for this issue — insert a new one
+        const { error } = await supabase.from("scc_actions").insert({
+          snapshot_id: snapshotId,
+          action_type: `site_${issue.issueId}`,
+          severity: issue.min > 100 ? "high" : "medium",
+          priority: 50,
+          status: "pending",
+          ...updatePayload,
+        });
+        if (error) console.warn(`[narrative] insert failed for ${issue.issueId}:`, error.message);
+        else console.log(`[narrative] inserted new action for ${issue.issueId} headline="${narrative.headline}"`);
+      }
     })
   );
 
