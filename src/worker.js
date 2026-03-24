@@ -2546,9 +2546,13 @@ async function fetchPsiData(snapshotId) {
 
   console.log(`[psi fetch] fetching PSI for ${metrics.length} pages`);
 
-  for (const m of metrics) {
+  // Process pages in parallel batches of 3 to avoid overwhelming PSI API
+  const PSI_BATCH_SIZE = 3;
+  for (let i = 0; i < metrics.length; i += PSI_BATCH_SIZE) {
+    const batch = metrics.slice(i, i + PSI_BATCH_SIZE);
+    await Promise.all(batch.map(async (m) => {
     const url = m.scc_pages?.url;
-    if (!url) continue;
+    if (!url) return;
 
     try {
       // Fetch mobile and desktop PSI in parallel
@@ -2619,7 +2623,8 @@ async function fetchPsiData(snapshotId) {
     } catch (err) {
       console.warn(`[psi fetch] error for ${url}: ${err.message}`);
     }
-  }
+    })); // end batch map
+  } // end batch loop
 
   console.log(`[psi fetch] done for snapshot=${snapshotId}`);
 }
@@ -2899,15 +2904,16 @@ async function runCrawlJob(job) {
       console.warn(`[gsc fetch] skipped: ${err.message}`)
     );
 
-    // Kick off PageSpeed Insights in background (non-blocking)
-    fetchPsiData(snapshotId).catch((err) =>
-      console.warn(`[psi fetch] skipped: ${err.message}`)
-    );
-
-    // Run money engine BEFORE marking snapshot finished so notes.money is ready when frontend loads
-    await runMoneyEngine(siteId, snapshotId, seedUrl, summaryState).catch((err) =>
-      console.warn(`[money engine] skipped: ${err.message}`)
-    );
+    // Run PSI and money engine in parallel BEFORE marking snapshot finished
+    // so all data is ready when the frontend loads results
+    await Promise.all([
+      fetchPsiData(snapshotId).catch((err) =>
+        console.warn(`[psi fetch] skipped: ${err.message}`)
+      ),
+      runMoneyEngine(siteId, snapshotId, seedUrl, summaryState).catch((err) =>
+        console.warn(`[money engine] skipped: ${err.message}`)
+      ),
+    ]);
 
     await markSnapshotFinished(snapshotId);
     await completeJob(jobId, "completed");
