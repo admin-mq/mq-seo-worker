@@ -3396,19 +3396,26 @@ async function callOpenAI(model, systemPrompt, userPrompt) {
   }
 }
 
-async function generateExecutiveSummary({ market, symbol, businessName, issueCount, totalMin, totalMax, psiScore, indexedPages, industry }) {
+async function generateExecutiveSummary({ market, symbol, businessName, issueCount, totalMin, totalMax, psiScore, indexedPages, industry, nlSentiment, nlEntities, nlCategories }) {
   const systemPrompt = `You are a trusted business advisor speaking to a business owner in the ${market} market. Write a business health report executive summary. Plain language. Money focused. Zero jargon. Under 100 words. Use ${symbol} for all figures. ${market === "UK" ? "UK tone: measured, professional." : "US tone: direct, confident, action-oriented."}`;
+
+  // Build NL context block if available
+  const nlContext = [];
+  if (nlSentiment != null) nlContext.push(`Content sentiment: ${nlSentiment > 0.2 ? "positive" : nlSentiment < -0.2 ? "negative" : "neutral"} (score: ${nlSentiment.toFixed(2)})`);
+  if (nlEntities?.length)  nlContext.push(`Key topics on site: ${nlEntities.slice(0, 6).join(", ")}`);
+  if (nlCategories?.length) nlContext.push(`Google content categories: ${nlCategories.slice(0, 3).join(", ")}`);
+
   const userPrompt = `Business: ${businessName || "this website"} — ${industry} business
 Market: ${market} | Currency: ${symbol}
 Issues found: ${issueCount}
 Estimated monthly loss: ${symbol}${totalMin} – ${symbol}${totalMax}
 PageSpeed score: ${psiScore ?? "unknown"}/100
-Google indexed pages: ${indexedPages ?? "unknown"}
+Google indexed pages: ${indexedPages ?? "unknown"}${nlContext.length ? "\n" + nlContext.join("\n") : ""}
 Write the summary now. Plain text only, no markdown.`;
   return await callOpenAI("gpt-4o", systemPrompt, userPrompt);
 }
 
-async function generateIssueNarrative({ issueId, market, symbol, industry, loss, min, max, valuePerVisitor }) {
+async function generateIssueNarrative({ issueId, market, symbol, industry, loss, min, max, valuePerVisitor, nlEntities, nlSentiment }) {
   const issueDescriptions = {
     missing_title: "Missing or weak title tags on key pages",
     missing_meta: "Missing meta descriptions across pages",
@@ -3432,7 +3439,7 @@ Return ONLY valid JSON:
 Business type: ${industry}
 Issue: ${issueDescriptions[issueId] || issueId}
 Monthly loss: ${symbol}${min} – ${symbol}${max}
-Value per visitor: ${symbol}${valuePerVisitor}`;
+Value per visitor: ${symbol}${valuePerVisitor}${nlEntities?.length ? `\nKey site topics: ${nlEntities.slice(0, 4).join(", ")}` : ""}${nlSentiment != null ? `\nContent sentiment: ${nlSentiment > 0.2 ? "positive" : nlSentiment < -0.2 ? "negative" : "neutral"}` : ""}`;
 
   const raw = await callOpenAI("gpt-4o-mini", systemPrompt, userPrompt);
   if (!raw) return null;
@@ -3452,14 +3459,24 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   let nlIndustry = null;
   let nlBusinessName = null;
   let nlLocations = [];
+  let nlSentiment = null;
+  let nlTopEntities = []; // top entity names for OpenAI context
+  let nlTopCategories = []; // raw category names for OpenAI context
   if (summaryState.homepage_text_snippet) {
     nlResult = await callNaturalLanguageAPI(summaryState.homepage_text_snippet);
     if (nlResult) {
       nlIndustry = mapNLCategoriesToIndustry(nlResult.categories);
       nlBusinessName = extractBusinessNameFromEntities(nlResult.entities);
       nlLocations = extractLocationsFromEntities(nlResult.entities);
-      const sentiment = nlResult.documentSentiment;
-      console.log(`[nl api] industry=${nlIndustry} bizName=${nlBusinessName} locations=${nlLocations.join(",")} sentiment=${sentiment?.score?.toFixed(2)}`);
+      nlSentiment = nlResult.documentSentiment?.score ?? null;
+      // Top entities by salience (excluding generic words already filtered in extractBusinessNameFromEntities)
+      nlTopEntities = (nlResult.entities || [])
+        .filter(e => (e.salience || 0) > 0.01 && e.name && e.name.length > 2)
+        .sort((a, b) => (b.salience || 0) - (a.salience || 0))
+        .slice(0, 10)
+        .map(e => e.name);
+      nlTopCategories = (nlResult.categories || []).map(c => c.name).slice(0, 5);
+      console.log(`[nl api] industry=${nlIndustry} bizName=${nlBusinessName} locations=${nlLocations.join(",")} sentiment=${nlSentiment?.toFixed(2)} entities=${nlTopEntities.slice(0,5).join(",")}`);
     }
   }
 
@@ -3521,7 +3538,7 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     if (!businessName) businessName = siteRow?.name || siteRow?.url || seedUrl;
   } catch {}
 
-  // 7. Generate executive summary
+  // 7. Generate executive summary — include NL context so OpenAI has richer data
   const execSummary = await generateExecutiveSummary({
     market, symbol, businessName,
     issueCount: money.issueResults.length,
@@ -3530,6 +3547,9 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     psiScore: psiMobile,
     indexedPages,
     industry,
+    nlSentiment,
+    nlEntities: nlTopEntities,
+    nlCategories: nlTopCategories,
   });
 
   // 8. Update snapshot with money data
@@ -3588,7 +3608,7 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   const top5 = money.issueResults.slice(0, 5);
   await Promise.all(
     top5.map(async (issue) => {
-      const narrative = await generateIssueNarrative({ ...issue, market, symbol, industry, valuePerVisitor: money.valuePerVisitor });
+      const narrative = await generateIssueNarrative({ ...issue, market, symbol, industry, valuePerVisitor: money.valuePerVisitor, nlEntities: nlTopEntities, nlSentiment });
       if (!narrative) return;
 
       // Update matching site-wide action if it exists
