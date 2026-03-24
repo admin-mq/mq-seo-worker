@@ -2893,8 +2893,16 @@ function detectMarket(seedUrl) {
   try {
     const url = new URL(seedUrl.startsWith("http") ? seedUrl : `https://${seedUrl}`);
     const h = url.hostname.toLowerCase();
-    // UK
-    if (h.endsWith(".co.uk") || h.endsWith(".org.uk") || h.endsWith(".me.uk") || h.endsWith(".uk"))
+    // UK — standard + city/regional TLDs
+    if (
+      h.endsWith(".co.uk") || h.endsWith(".org.uk") || h.endsWith(".me.uk") ||
+      h.endsWith(".net.uk") || h.endsWith(".ltd.uk") || h.endsWith(".plc.uk") ||
+      h.endsWith(".uk") ||
+      h.endsWith(".london") || h.endsWith(".wales") || h.endsWith(".cymru") ||
+      h.endsWith(".scot") || h.endsWith(".manchester") || h.endsWith(".birmingham") ||
+      h.endsWith(".glasgow") || h.endsWith(".leeds") || h.endsWith(".liverpool") ||
+      h.endsWith(".sheffield") || h.endsWith(".bristol") || h.endsWith(".edinburgh")
+    )
       return { market: "UK", currency: "GBP", symbol: "£", confidence: 90 };
     // India
     if (h.endsWith(".in") || h.endsWith(".co.in") || h.endsWith(".ind.in"))
