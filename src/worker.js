@@ -3164,10 +3164,26 @@ function mapNLCategoriesToIndustry(categories) {
 /**
  * Extract the most prominent organisation name from NL entities
  */
+// Generic words that NL API often wrongly picks as "organization" names
+const GENERIC_BIZ_WORDS = new Set([
+  "shop","store","website","site","page","home","cart","menu","blog","news",
+  "team","contact","about","services","products","company","business","brand",
+  "support","help","search","login","signup","account","checkout","order",
+  "cookie","privacy","terms","policy","all","new","sale","free","best","top",
+]);
+
 function extractBusinessNameFromEntities(entities) {
   if (!entities || !entities.length) return null;
   const orgs = entities
-    .filter((e) => e.type === "ORGANIZATION" && (e.salience || 0) > 0.01)
+    .filter((e) => {
+      if (e.type !== "ORGANIZATION") return false;
+      if ((e.salience || 0) <= 0.01) return false;
+      const nameLower = (e.name || "").toLowerCase().trim();
+      // Skip single generic words and very short names
+      if (nameLower.length < 3) return false;
+      if (GENERIC_BIZ_WORDS.has(nameLower)) return false;
+      return true;
+    })
     .sort((a, b) => (b.salience || 0) - (a.salience || 0));
   return orgs.length ? orgs[0].name : null;
 }
