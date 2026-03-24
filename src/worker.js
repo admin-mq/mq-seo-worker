@@ -2899,8 +2899,8 @@ async function runCrawlJob(job) {
     await updateSnapshotSummary(snapshotId, summaryJson);
     await generateSiteWideActions(snapshotId, summaryState);
 
-    // Enrich with Google Search Console data (non-blocking)
-    fetchGscData(siteId, snapshotId).catch((err) =>
+    // Fetch GSC data FIRST so money engine can use impression counts for indexed page estimate
+    await fetchGscData(siteId, snapshotId).catch((err) =>
       console.warn(`[gsc fetch] skipped: ${err.message}`)
     );
 
@@ -3229,27 +3229,59 @@ async function safeBrowsingCheck(url) {
   }
 }
 
-async function getIndexedPageCount(domain) {
-  if (!GOOGLE_API_KEY_MONEY || !GOOGLE_CSE_ID) return null;
-  try {
-    const cleanDomain = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
-    const res = await axios.get("https://www.googleapis.com/customsearch/v1", {
-      params: {
-        key: GOOGLE_API_KEY_MONEY,
-        cx: GOOGLE_CSE_ID,
-        q: `site:${cleanDomain}`,
-        num: 1,
-      },
-      timeout: 8000,
-    });
-    const total = res.data?.searchInformation?.totalResults;
-    return total ? parseInt(total, 10) : null;
-  } catch (e) {
-    const status = e.response?.status;
-    const reason = e.response?.data?.error?.message || e.message;
-    console.warn(`[custom search] indexed pages failed: ${status} – ${reason}`);
-    return null;
+async function getIndexedPageCount(domain, snapshotId) {
+  // Source 1: Custom Search API (site: query) — works if CSE is enabled
+  if (GOOGLE_API_KEY_MONEY && GOOGLE_CSE_ID) {
+    try {
+      const cleanDomain = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
+      const res = await axios.get("https://www.googleapis.com/customsearch/v1", {
+        params: {
+          key: GOOGLE_API_KEY_MONEY,
+          cx: GOOGLE_CSE_ID,
+          q: `site:${cleanDomain}`,
+          num: 1,
+        },
+        timeout: 8000,
+        validateStatus: () => true,
+      });
+      if (res.status === 200) {
+        const total = res.data?.searchInformation?.totalResults;
+        if (total) {
+          const count = parseInt(total, 10);
+          console.log(`[custom search] indexed pages = ${count} for ${cleanDomain}`);
+          return count;
+        }
+      } else {
+        const reason = res.data?.error?.message || `HTTP ${res.status}`;
+        console.warn(`[custom search] indexed pages failed: ${res.status} – ${reason}`);
+      }
+    } catch (e) {
+      console.warn(`[custom search] indexed pages error: ${e.message}`);
+    }
   }
+
+  // Source 2: GSC impressions data — count pages that have appeared in Google search
+  if (snapshotId) {
+    try {
+      const { data: gscPages } = await supabase
+        .from("scc_page_snapshot_metrics")
+        .select("impressions")
+        .eq("snapshot_id", snapshotId)
+        .gt("impressions", 0);
+      if (gscPages && gscPages.length > 0) {
+        // Pages with impressions are confirmed indexed; extrapolate for uncrawled pages
+        const confirmedIndexed = gscPages.length;
+        const estimate = Math.round(confirmedIndexed * 3); // conservative multiplier
+        console.log(`[indexed pages] GSC-based estimate: ${confirmedIndexed} pages with impressions → ~${estimate} total`);
+        return estimate;
+      }
+    } catch (e) {
+      console.warn(`[indexed pages] GSC fallback error: ${e.message}`);
+    }
+  }
+
+  // Source 3: Crawl-based estimate — rough but always available
+  return null; // Caller will use crawl count as confidence signal
 }
 
 function getSiteHealthCTRPosition(issues) {
@@ -3502,8 +3534,8 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   const isThreat = await safeBrowsingCheck(seedUrl);
   if (isThreat) console.warn(`[money engine] SAFE BROWSING THREAT detected for ${seedUrl}`);
 
-  // 3. Indexed page count via Custom Search
-  const indexedPages = await getIndexedPageCount(seedUrl);
+  // 3. Indexed page count — tries Custom Search, then GSC impressions data, then null
+  const indexedPages = await getIndexedPageCount(seedUrl, snapshotId);
   console.log(`[money engine] indexedPages=${indexedPages}`);
 
   // 4. Get PSI score from DB for this snapshot
