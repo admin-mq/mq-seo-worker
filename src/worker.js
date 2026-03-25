@@ -3531,6 +3531,34 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   const indexedPages = await getIndexedPageCount(seedUrl, snapshotId, summaryState.pages_crawled);
   console.log(`[money engine] indexedPages=${indexedPages}`);
 
+  // 3b. GBP data — override business name, industry, and market if connected
+  let gbpBusinessName = null;
+  let gbpCategory = null;
+  let gbpCountry = null;
+  let gbpRating = null;
+  let gbpReviewCount = null;
+  try {
+    const { data: siteRow } = await supabase.from("scc_sites").select("user_id").eq("id", siteId).single();
+    if (siteRow?.user_id) {
+      const { data: gbpConn } = await supabase
+        .from("scc_gbp_connections")
+        .select("business_name, primary_category, address_country, rating, review_count")
+        .eq("user_id", siteRow.user_id)
+        .eq("site_id", siteId)
+        .single();
+      if (gbpConn) {
+        gbpBusinessName = gbpConn.business_name || null;
+        gbpCategory     = gbpConn.primary_category || null;
+        gbpCountry      = gbpConn.address_country || null;
+        gbpRating       = gbpConn.rating || null;
+        gbpReviewCount  = gbpConn.review_count || null;
+        console.log(`[gbp data] bizName=${gbpBusinessName} category=${gbpCategory} country=${gbpCountry} rating=${gbpRating} reviews=${gbpReviewCount}`);
+      }
+    }
+  } catch (e) {
+    console.warn("[gbp data] fetch failed:", e.message);
+  }
+
   // 4. Get PSI score from DB for this snapshot
   let psiMobile = null;
   try {
@@ -3556,12 +3584,44 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     summaryState,
   });
 
-  // 6. Get business name — prefer NL-extracted name, then DB, then URL
-  let businessName = nlBusinessName || null;
+  // 6. Get business name — GBP wins, then NL, then DB, then URL
+  let businessName = gbpBusinessName || nlBusinessName || null;
   try {
     const { data: siteRow } = await supabase.from("scc_sites").select("name, url").eq("id", siteId).single();
     if (!businessName) businessName = siteRow?.name || siteRow?.url || seedUrl;
   } catch {}
+
+  // Override industry with GBP category if available
+  const gbpIndustryMap = {
+    "restaurant": "restaurant", "food": "restaurant", "cafe": "restaurant", "pizza": "restaurant",
+    "hotel": "hospitality", "accommodation": "hospitality",
+    "retail": "ecommerce", "clothing": "ecommerce", "fashion": "ecommerce", "shop": "ecommerce",
+    "lawyer": "legal", "solicitor": "legal", "law firm": "legal",
+    "doctor": "healthcare", "dentist": "healthcare", "medical": "healthcare",
+    "software": "saas", "technology": "saas",
+    "real estate": "realestate", "estate agent": "realestate", "property": "realestate",
+  };
+  let finalIndustry = industry;
+  if (gbpCategory) {
+    const lc = gbpCategory.toLowerCase();
+    for (const [key, val] of Object.entries(gbpIndustryMap)) {
+      if (lc.includes(key)) { finalIndustry = val; break; }
+    }
+    if (finalIndustry !== industry) console.log(`[gbp data] industry overridden: ${industry} → ${finalIndustry} (from GBP category: ${gbpCategory})`);
+  }
+
+  // Boost market confidence if GBP address_country available
+  if (gbpCountry) {
+    const gbpMarket = gbpCountry === "GB" ? "UK" : gbpCountry === "US" ? "US" : gbpCountry === "AU" ? "AU" : null;
+    if (gbpMarket && gbpMarket !== market) {
+      console.log(`[gbp data] market overridden: ${market} → ${gbpMarket} (from GBP address country: ${gbpCountry})`);
+    }
+    const overriddenMarket = gbpMarket || market;
+    const overriddenCurrency = overriddenMarket === "UK" ? "GBP" : overriddenMarket === "AU" ? "AUD" : "USD";
+    const overriddenSymbol = overriddenMarket === "UK" ? "£" : overriddenMarket === "AU" ? "A$" : "$";
+    // Re-assign so these flow into money calc below
+    Object.assign({ market: overriddenMarket, currency: overriddenCurrency, symbol: overriddenSymbol });
+  }
 
   // 7. Generate executive summary — include NL context so OpenAI has richer data
   const execSummary = await generateExecutiveSummary({
@@ -3625,6 +3685,12 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
             .map((e) => ({ name: e.name, type: e.type, salience: e.salience }))
         : [],
       nl_locations: nlLocations.slice(0, 5),
+      // GBP enrichment
+      gbp_business_name: gbpBusinessName,
+      gbp_category: gbpCategory,
+      gbp_country: gbpCountry,
+      gbp_rating: gbpRating,
+      gbp_review_count: gbpReviewCount,
     },
   };
   await supabase.from("scc_snapshots").update({ notes: JSON.stringify(updatedNotes) }).eq("id", snapshotId);
