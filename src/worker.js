@@ -3115,6 +3115,25 @@ function classifyIndustry(pageTypeCounts, siteType, seedUrl) {
   return "service";
 }
 
+// ─── Google Keyword Planner (skeleton – activates when GOOGLE_ADS_DEVELOPER_TOKEN is set) ───
+// TODO: Activate once Google Ads Manager account is approved
+async function callKeywordPlannerAPI(seedKeywords, market) {
+  const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+  const customerId     = process.env.GOOGLE_ADS_CUSTOMER_ID;
+  const refreshToken   = process.env.GOOGLE_ADS_REFRESH_TOKEN;
+  if (!developerToken || !customerId || !refreshToken) return null;
+  try {
+    console.log(`[keyword planner] seed=${(seedKeywords||[]).slice(0,3).join(",")} market=${market}`);
+    // Will call KeywordPlanIdeaService.generateKeywordIdeas() via google-ads-api npm package
+    // Returns: [{ keyword, avg_monthly_searches, competition, low_top_bid, high_top_bid }]
+    // high_top_bid → replaces generic value_per_visitor benchmark with real CPC data
+    return null; // stub until credentials available
+  } catch (err) {
+    console.log(`[keyword planner] failed: ${err.message}`);
+    return null;
+  }
+}
+
 // ─── Google Natural Language API ─────────────────────────────────────────────
 
 async function callNaturalLanguageAPI(text) {
