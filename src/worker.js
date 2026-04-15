@@ -3672,16 +3672,6 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     summaryState,
   });
 
-  // 5b. Resolve competitor data + calculate CTR revenue gap
-  const competitorDomains = await competitorPromise;
-  const userPosition = getSiteHealthCTRPosition(summaryState.issues);
-  const competitorGap = calculateCompetitorRevenueGap(
-    money.estimatedMonthlyClicks, userPosition, market, finalIndustry || industry
-  );
-  if (competitorDomains?.length) {
-    console.log(`[perplexity] competitors: ${competitorDomains.join(", ")} | revenue gap: ${symbol}${competitorGap?.revenueGapMin || 0}–${symbol}${competitorGap?.revenueGapMax || 0}/mo`);
-  }
-
   // 6. Get business name — GBP wins, then NL, then DB, then URL
   let businessName = gbpBusinessName || nlBusinessName || null;
   try {
@@ -3719,6 +3709,16 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     const overriddenSymbol = overriddenMarket === "UK" ? "£" : overriddenMarket === "AU" ? "A$" : "$";
     // Re-assign so these flow into money calc below
     Object.assign({ market: overriddenMarket, currency: overriddenCurrency, symbol: overriddenSymbol });
+  }
+
+  // 6b. Resolve competitor data + CTR revenue gap (finalIndustry now available)
+  const competitorDomains = await competitorPromise;
+  const userPosition = getSiteHealthCTRPosition(summaryState.issues);
+  const competitorGap = calculateCompetitorRevenueGap(
+    money.estimatedMonthlyClicks, userPosition, market, finalIndustry
+  );
+  if (competitorDomains?.length) {
+    console.log(`[perplexity] competitors: ${competitorDomains.join(", ")} | revenue gap: ${symbol}${competitorGap?.revenueGapMin || 0}–${symbol}${competitorGap?.revenueGapMax || 0}/mo`);
   }
 
   // 7. Generate executive summary — include NL context so OpenAI has richer data
