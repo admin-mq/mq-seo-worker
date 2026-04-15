@@ -3247,6 +3247,88 @@ async function safeBrowsingCheck(url) {
   }
 }
 
+// ── Perplexity: real-time competitor identification ──────────────────────────
+async function callPerplexityForCompetitors(keywords, market, industry, userDomain) {
+  const apiKey = process.env.PERPLEXITY_API_KEY;
+  if (!apiKey || !keywords?.length) return null;
+  try {
+    const topKw = keywords.slice(0, 5).join(", ");
+    const marketLabel = market === "UK" ? "United Kingdom" : market === "AU" ? "Australia" : "United States";
+    const userBase = userDomain.replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+
+    const prompt = `Search Google right now for these keywords in ${marketLabel}: "${topKw}".
+This is for a ${industry} business.
+Which domains are currently ranking in positions 1–3 for these searches?
+Exclude ${userBase} from the results.
+Return ONLY 2–3 domain names separated by commas (e.g. "example.com, rival.com"). No explanation, no URLs, no extra text.`;
+
+    const res = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "sonar",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 120,
+        temperature: 0.1,
+      }),
+    });
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    console.log(`[perplexity] raw response: ${content.slice(0, 200)}`);
+
+    // Extract clean domain names
+    const domainRegex = /\b([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,6}\b/g;
+    const found = (content.match(domainRegex) || [])
+      .map(d => d.toLowerCase().replace(/^www\./, ""))
+      .filter(d =>
+        !d.includes(userBase) &&
+        !["google.com","wikipedia.org","youtube.com","facebook.com","instagram.com","twitter.com","x.com"].includes(d) &&
+        d.includes(".")
+      );
+
+    const unique = [...new Set(found)].slice(0, 3);
+    console.log(`[perplexity] competitors identified: ${unique.join(", ") || "none"}`);
+    return unique.length > 0 ? unique : null;
+  } catch (err) {
+    console.warn("[perplexity] competitor lookup failed:", err.message);
+    return null;
+  }
+}
+
+// ── CTR gap: revenue going to position-1 competitor ─────────────────────────
+function calculateCompetitorRevenueGap(estimatedMonthlyClicks, userPosition, market, industry) {
+  if (!estimatedMonthlyClicks || estimatedMonthlyClicks <= 0) return null;
+  const userCtr   = ctrAtPosition(userPosition) / 100;
+  const pos1Ctr   = ctrAtPosition(1) / 100;  // 28.5%
+  const pos3Ctr   = ctrAtPosition(3) / 100;  // 11.0%
+  if (userCtr <= 0) return null;
+
+  // Reverse-engineer monthly impressions from current traffic + CTR
+  const estimatedImpressions = Math.round(estimatedMonthlyClicks / userCtr);
+
+  // Traffic the #1 competitor gets from same impression pool
+  const pos1Traffic = Math.round(estimatedImpressions * pos1Ctr);
+  const pos3Traffic = Math.round(estimatedImpressions * pos3Ctr);
+
+  // Gap = competitor traffic minus user traffic (floor at 0)
+  const gapMax = Math.max(0, pos1Traffic - estimatedMonthlyClicks);
+  const gapMin = Math.max(0, pos3Traffic - estimatedMonthlyClicks);
+
+  const benchmark = BENCHMARKS[market]?.[industry] || BENCHMARKS[market]?.default || BENCHMARKS.US.default;
+  const vpv = benchmark.valuePerVisitor;
+
+  return {
+    trafficGapMin: gapMin,
+    trafficGapMax: gapMax,
+    revenueGapMin: Math.round(gapMin * vpv * 0.8),
+    revenueGapMax: Math.round(gapMax * vpv * 1.2),
+  };
+}
+
 async function getIndexedPageCount(domain, snapshotId, pagesCrawled) {
   // Source 1: GSC impressions data — most accurate, uses real Google data
   if (snapshotId) {
@@ -3523,6 +3605,12 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
   const industry = nlIndustry || classifyIndustry(summaryState.page_type_counts, summaryState.site_type, seedUrl);
   console.log(`[money engine] market=${market} industry=${industry} (nl=${nlIndustry}) signals=${JSON.stringify(summaryState.location_signals)}`);
 
+  // 1d. Perplexity competitor identification — fires early in parallel with other steps
+  const competitorPromise = callPerplexityForCompetitors(
+    nlTopEntities.length ? nlTopEntities : nlTopCategories,
+    market, industry, seedUrl
+  );
+
   // 2. Safe browsing check
   const isThreat = await safeBrowsingCheck(seedUrl);
   if (isThreat) console.warn(`[money engine] SAFE BROWSING THREAT detected for ${seedUrl}`);
@@ -3583,6 +3671,16 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     indexedPages,
     summaryState,
   });
+
+  // 5b. Resolve competitor data + calculate CTR revenue gap
+  const competitorDomains = await competitorPromise;
+  const userPosition = getSiteHealthCTRPosition(summaryState.issues);
+  const competitorGap = calculateCompetitorRevenueGap(
+    money.estimatedMonthlyClicks, userPosition, market, finalIndustry || industry
+  );
+  if (competitorDomains?.length) {
+    console.log(`[perplexity] competitors: ${competitorDomains.join(", ")} | revenue gap: ${symbol}${competitorGap?.revenueGapMin || 0}–${symbol}${competitorGap?.revenueGapMax || 0}/mo`);
+  }
 
   // 6. Get business name — GBP wins, then NL, then DB, then URL
   let businessName = gbpBusinessName || nlBusinessName || null;
@@ -3654,6 +3752,9 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
     indexed_page_count: indexedPages,
     executive_summary: execSummary,
     confidence_score: confidenceScore,
+    competitor_domains: competitorDomains || null,
+    competitor_traffic_gap_min: competitorGap?.revenueGapMin || null,
+    competitor_traffic_gap_max: competitorGap?.revenueGapMax || null,
   }).eq("id", snapshotId);
 
   // Also merge money data into notes JSON so frontend can read without schema cache issues
@@ -3691,6 +3792,12 @@ async function runMoneyEngine(siteId, snapshotId, seedUrl, summaryState) {
       gbp_country: gbpCountry,
       gbp_rating: gbpRating,
       gbp_review_count: gbpReviewCount,
+      // Competitor intelligence
+      competitor_domains: competitorDomains || [],
+      competitor_traffic_gap_min: competitorGap?.revenueGapMin || null,
+      competitor_traffic_gap_max: competitorGap?.revenueGapMax || null,
+      competitor_traffic_gap_traffic_min: competitorGap?.trafficGapMin || null,
+      competitor_traffic_gap_traffic_max: competitorGap?.trafficGapMax || null,
     },
   };
   await supabase.from("scc_snapshots").update({ notes: JSON.stringify(updatedNotes) }).eq("id", snapshotId);
